@@ -2,22 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-import plotly.express as px
 from sklearn.ensemble import IsolationForest
+import plotly.express as px
 
-def main():
-    st.set_page_config(page_title="Аномалии: списания и закрытие потребности", layout="wide")
-    st.title("Анализ аномалий: Списания и Закрытие потребности")
-
-    uploaded_file = st.file_uploader("Загрузите CSV-файл с данными", type=["csv"])
-    if not uploaded_file:
-        st.info("Пожалуйста, загрузите CSV-файл для анализа.")
-        return
-
-    # Чтение и подготовка данных
+def load_and_prepare(uploaded_file):
     df = pd.read_csv(uploaded_file)
     df.columns = df.columns.str.strip()
-    # Конвертация строковых процентов
     df['Списания_%'] = (
         df['ЗЦ2_срок_качество_%'].astype(str)
         .str.replace(',', '.').str.rstrip('%').astype(float)
@@ -26,81 +16,91 @@ def main():
         df['Закрытие потребности_%'].astype(str)
         .str.replace(',', '.').str.rstrip('%').astype(float)
     )
-    # Ensure sales column exists
     df['Продажа_с_ЗЦ_сумма'] = pd.to_numeric(df['Продажа_с_ЗЦ_сумма'], errors='coerce').fillna(0)
-    df_clean = df.dropna(subset=['Списания_%', 'Закрытие_потребности_%'])
+    return df.dropna(subset=['Списания_%', 'Закрытие_потребности_%'])
 
-    # Обучение IsolationForest для оценки аномалий
-    X = df_clean[['Списания_%', 'Закрытие_потребности_%']]
-    model = IsolationForest(contamination=0.05, random_state=42)
-    model.fit(X)
-    df_clean['anomaly_score'] = model.decision_function(X)
-    df_clean['is_anomaly'] = model.predict(X) == -1
+def compute_scores(df):
+    X = df[['Списания_%', 'Закрытие_потребности_%']]
+    iso = IsolationForest(contamination=0.05, random_state=42)
+    iso.fit(X)
+    df['anomaly_score'] = iso.decision_function(X)
+    df['anomaly_severity'] = -df['anomaly_score']  # higher = more anomalous
+    df['combined_score'] = df['anomaly_severity'] * df['Продажа_с_ЗЦ_сумма']
+    return df
 
-    # Пороговые фильтры
+def filter_and_sort(df, condition):
+    df_f = df[condition].copy()
+    return df_f.sort_values(by=['combined_score'], ascending=False)
+
+def display_section(df_sec, title):
     low_waste_min, low_waste_max = 0.5, 8
     low_fill_min, low_fill_max   = 10, 75
     high_waste_min, high_fill_min = 20, 80
 
-    # Выборки аномалий
-    low_anomalies = df_clean[
-        df_clean['Списания_%'].between(low_waste_min, low_waste_max) &
-        df_clean['Закрытие_потребности_%'].between(low_fill_min, low_fill_max)
+    # Metrics
+    mean_w = df_sec['Списания_%'].mean()
+    wavg_w = np.average(df_sec['Списания_%'], weights=df_sec['Продажа_с_ЗЦ_сумма']) if df_sec['Продажа_с_ЗЦ_сумма'].sum() else np.nan
+    mean_f = df_sec['Закрытие_потребности_%'].mean()
+    wavg_f = np.average(df_sec['Закрытие_потребности_%'], weights=df_sec['Продажа_с_ЗЦ_сумма']) if df_sec['Продажа_с_ЗЦ_сумма'].sum() else np.nan
+
+    st.subheader(title)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Среднее списания", f"{mean_w:.1f}%")
+    c2.metric("Взв. среднее списания", f"{wavg_w:.1f}%")
+    c3.metric("Среднее закрытие", f"{mean_f:.1f}%")
+    c4.metric("Взв. среднее закрытие", f"{wavg_f:.1f}%")
+
+    cols_disp = [
+        'Категория','Группа','Name_tov',
+        'Списания_%','Закрытие_потребности_%',
+        'Продажа_с_ЗЦ_сумма','anomaly_severity','combined_score'
     ]
-    high_anomalies = df_clean[
-        (df_clean['Списания_%'] >= high_waste_min) &
-        (df_clean['Закрытие_потребности_%'] >= high_fill_min)
-    ]
+    st.dataframe(df_sec[cols_disp].style
+        .format({
+            'Списания_%': '{:.1f}', 'Закрытие_потребности_%': '{:.1f}',
+            'Продажа_с_ЗЦ_сумма': '{:.0f}',
+            'anomaly_severity': '{:.3f}', 'combined_score': '{:.2f}'
+        }), use_container_width=True)
 
-    # Краткие таблицы
-    cols_display = ['Категория', 'Группа', 'Name_tov', 
-                    'Списания_%', 'Закрытие_потребности_%', 
-                    'Продажа_с_ЗЦ_сумма', 'anomaly_score']
-    # Сортируем сначала по аномальности (score ASC), потом по продажам DESC
-    low_short = low_anomalies[cols_display] \
-        .sort_values(by=['anomaly_score', 'Продажа_с_ЗЦ_сумма'], ascending=[True, False])
-    high_short = high_anomalies[cols_display] \
-        .sort_values(by=['anomaly_score', 'Продажа_с_ЗЦ_сумма'], ascending=[True, False])
+def main():
+    st.set_page_config(page_title="Аномалии App", layout="wide")
+    st.title("Анализ аномалий с комбинированным скором")
 
-    # Показ метрик
-    st.subheader("Метрики и сортировка по аномалии и продажам")
-    c1, c2 = st.columns(2)
-    c1.metric("Низкие списания + Низкое закрытие", len(low_short))
-    c2.metric("Высокие списания + Высокое закрытие", len(high_short))
+    uf = st.file_uploader("Загрузите CSV", type=["csv"])
+    if not uf:
+        st.info("Загрузите файл для старта")
+        return
 
-    # Таблицы
-    st.subheader("Низкие списания + Низкое закрытие — детали")
-    st.dataframe(low_short, use_container_width=True)
+    df = load_and_prepare(uf)
+    df = compute_scores(df)
 
-    st.subheader("Высокие списания + Высокое закрытие — детали")
-    st.dataframe(high_short, use_container_width=True)
+    low_cond = df['Списания_%'].between(0.5, 8) & df['Закрытие_потребности_%'].between(10, 75)
+    high_cond = df['Списания_%'] >= 20 & df['Закрытие_потребности_%'] >= 80
 
-    # Донат-диаграмма
-    total = len(df_clean)
+    low_df = filter_and_sort(df, low_cond)
+    high_df = filter_and_sort(df, high_cond)
+
+    display_section(low_df, "Низкие списания + Низкое закрытие потребности")
+    display_section(high_df, "Высокие списания + Высокое закрытие потребности")
+
+    # Donut
+    total = len(df)
     counts = {
-        "Низкие списания + Низкое закрытие": len(low_short),
-        "Высокие списания + Высокое закрытие": len(high_short),
-        "Остальные": total - len(low_short) - len(high_short)
+        "Низкие": len(low_df),
+        "Высокие": len(high_df),
+        "Остальные": total - len(low_df) - len(high_df)
     }
-    fig_donut = px.pie(
-        names=list(counts.keys()), values=list(counts.values()),
-        title="Распределение позиций", hole=0.4
-    )
-    st.plotly_chart(fig_donut, use_container_width=True)
+    fig = px.pie(names=list(counts.keys()), values=list(counts.values()), hole=0.4)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Скачать Excel
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        low_anomalies.to_excel(writer, sheet_name='low_anomalies', index=False)
-        high_anomalies.to_excel(writer, sheet_name='high_anomalies', index=False)
-        low_short.to_excel(writer, sheet_name='low_short', index=False)
-        high_short.to_excel(writer, sheet_name='high_short', index=False)
-    buffer.seek(0)
-    st.download_button(
-        "Скачать результаты в Excel",
-        data=buffer, file_name="anomalies.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # Download
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        low_df.to_excel(w, sheet_name='low', index=False)
+        high_df.to_excel(w, sheet_name='high', index=False)
+    buf.seek(0)
+    st.download_button("Скачать XLSX", buf, "results.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
