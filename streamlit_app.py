@@ -23,8 +23,7 @@ def compute_scores(df):
     X = df[['Списания %', 'Закрытие потребности %']]
     model = IsolationForest(contamination=0.05, random_state=42)
     model.fit(X)
-    scores = model.decision_function(X)
-    df['Оценка аномалии'] = -scores  # higher = more anomalous
+    df['Оценка аномалии'] = -model.decision_function(X)  # higher = more anomalous
     df['Комбинированный скор'] = df['Оценка аномалии'] * df['Продажа с ЗЦ сумма']
     return df
 
@@ -64,6 +63,30 @@ def display_section(df_sec, title, cmap, waste_range=None, fill_range=None):
         styler = styler.background_gradient(subset=['Закрытие потребности %'], cmap=cmap)
     st.dataframe(styler, use_container_width=True)
 
+def display_subcategory_impact(df, title):
+    st.subheader(f"Влияние на подкатегории: {title}")
+    total_sales_by_group = df.groupby('Группа')['Продажа с ЗЦ сумма'].sum()
+    impact = (
+        df.groupby('Группа').apply(
+            lambda sub: pd.Series({
+                'Количество позиций': len(sub),
+                'Сумма продаж аномалии': sub['Продажа с ЗЦ сумма'].sum(),
+                'Доля продаж (%)': sub['Продажа с ЗЦ сумма'].sum() / total_sales_by_group[sub.name] * 100,
+                'Средняя оценка аномалии': sub['Оценка аномалии'].mean(),
+                'Взв. средняя оценка': np.average(sub['Оценка аномалии'], weights=sub['Продажа с ЗЦ сумма']),
+                'Суммарный комб. скор': sub['Комбинированный скор'].sum()
+            })
+        )
+        .reset_index()
+    )
+    st.dataframe(impact.style.format({
+        'Сумма продаж аномалии': '{:.0f}',
+        'Доля продаж (%)': '{:.1f}',
+        'Средняя оценка аномалии': '{:.3f}',
+        'Взв. средняя оценка': '{:.3f}',
+        'Суммарный комб. скор': '{:.2f}'
+    }), use_container_width=True)
+
 def main():
     st.set_page_config(page_title="Аномалии", layout="wide")
     st.title("Анализ аномалий: списания и закрытие потребности")
@@ -76,69 +99,44 @@ def main():
     df = load_data(uploaded)
     df = compute_scores(df)
 
-    # Условия выбора
     low_cond = df['Списания %'].between(0.5, 8) & df['Закрытие потребности %'].between(10, 75)
     high_cond = (df['Списания %'] >= 20) & (df['Закрытие потребности %'] >= 80)
 
     low_df = filter_sort(df, low_cond)
     high_df = filter_sort(df, high_cond)
 
-    # Отображение разделов
-    display_section(
-        low_df,
-        "Низкие списания + Низкое закрытие потребности",
-        cmap='Greens',
-        waste_range=(0.5, 8),
-        fill_range=(10, 75)
-    )
-    display_section(
-        high_df,
-        "Высокие списания + Высокое закрытие потребности",
-        cmap='Reds',
-        waste_range=(20, df['Списания %'].max()),
-        fill_range=(80, df['Закрытие потребности %'].max())
-    )
+    display_section(low_df, "Низкие списания + Низкое закрытие потребности", 'Greens', (0.5, 8), (10, 75))
+    display_section(high_df, "Высокие списания + Высокое закрытие потребности", 'Reds', (20, df['Списания %'].max()), (80, df['Закрытие потребности %'].max()))
+
+    # вкладка влияния на подкатегории для обеих групп
+    display_subcategory_impact(low_df, "Низкие списания + Низкое закрытие")
+    display_subcategory_impact(high_df, "Высокие списания + Высокое закрытие")
 
     # Донат-диаграмма
     total = len(df)
-    counts = {
-        "Низкие": len(low_df),
-        "Высокие": len(high_df),
-        "Остальные": total - len(low_df) - len(high_df)
-    }
+    counts = {"Низкие": len(low_df), "Высокие": len(high_df), "Остальные": total - len(low_df) - len(high_df)}
     fig = px.pie(names=list(counts.keys()), values=list(counts.values()), hole=0.4)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Топ-30 по группам
-    st.subheader("Топ-30 наиболее критичных позиций по группам")
-    df_sorted = df.sort_values('Комбинированный скор', ascending=False)
-    top30 = (df_sorted
-             .groupby('Группа', as_index=False)
-             .head(30)
-             [['Группа', 'Name_tov', 'Списания %', 'Закрытие потребности %',
-               'Продажа с ЗЦ сумма', 'Комбинированный скор']])
-    with st.expander("Развернуть топ-30 по каждой группе"):
-        st.dataframe(top30.style.format({
-            'Списания %': '{:.1f}',
-            'Закрытие потребности %': '{:.1f}',
-            'Продажа с ЗЦ сумма': '{:.0f}',
-            'Комбинированный скор': '{:.2f}'
-        }), use_container_width=True)
-
-    # Скачивание результатов
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+    # Скачивание
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df.to_excel(writer, sheet_name='Низкие аномалии', index=False)
         high_df.to_excel(writer, sheet_name='Высокие аномалии', index=False)
-        top30.to_excel(writer, sheet_name='Топ-30 позиций', index=False)
-    buffer.seek(0)
+        # сохраняем и влияние на подкатегории
+        display_low = low_df[['Группа','Комбинированный скор','Продажа с ЗЦ сумма']]
+        display_high = high_df[['Группа','Комбинированный скор','Продажа с ЗЦ сумма']]
+        impact_low = low_df.groupby('Группа').apply(lambda sub: sub['Комбинированный скор'].sum()).reset_index(name='Суммарный комб. скор')
+        impact_high = high_df.groupby('Группа').apply(lambda sub: sub['Комбинированный скор'].sum()).reset_index(name='Суммарный комб. скор')
+        impact_low.to_excel(writer, sheet_name='Влияние низких', index=False)
+        impact_high.to_excel(writer, sheet_name='Влияние высоких', index=False)
+    buf.seek(0)
     st.download_button(
-        "Скачать результаты в Excel",
-        data=buffer,
-        file_name="anomalies_report.xlsx",
+        "Скачать отчет XLSX",
+        data=buf,
+        file_name="anomalies_full_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 if __name__ == "__main__":
     main()
-
