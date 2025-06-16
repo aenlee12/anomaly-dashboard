@@ -109,6 +109,27 @@ def main():
     fig = px.pie(names=list(counts.keys()), values=list(counts.values()), hole=0.4)
     st.plotly_chart(fig, use_container_width=True)
 
+st.subheader("Топ-30 наиболее критичных позиций по группам")
+# Сначала отсортируем весь датасет по комбинированному скору
+df_sorted = df.sort_values('Комбинированный скор', ascending=False)
+
+# Возьмём по 30 записей из каждой группы
+top30_per_group = (
+    df_sorted
+    .groupby('Группа', as_index=False)
+    .head(30)
+    [['Группа', 'Name_tov', 'Списания %', 'Закрытие потребности %', 'Продажа с ЗЦ сумма', 'Комбинированный скор']]
+)
+
+# Окно раскрытия для удобства
+with st.expander("Развернуть топ-30 по каждой группе"):
+    st.dataframe(top30_per_group.style.format({
+        'Списания %': '{:.1f}', 
+        'Закрытие потребности %': '{:.1f}',
+        'Продажа с ЗЦ сумма': '{:.0f}',
+        'Комбинированный скор': '{:.2f}'
+    }), use_container_width=True)
+
     # Скачивание
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
