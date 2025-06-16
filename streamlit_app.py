@@ -30,32 +30,40 @@ def compute_scores(df):
 def filter_sort(df, cond):
     return df[cond].sort_values('Комбинированный скор', ascending=False)
 
-def display_section(df_sec, title):
-    # Metrics
+def display_section(df_sec, title, cmap, waste_range=None, fill_range=None):
+    # Заголовок раздела и количество найденных позиций
+    st.subheader(f"{title} (Найдено: {len(df_sec)})")
+    # Метрики
     mean_waste = df_sec['Списания %'].mean()
     wavg_waste = np.average(df_sec['Списания %'], weights=df_sec['Продажа с ЗЦ сумма']) if df_sec['Продажа с ЗЦ сумма'].sum() else np.nan
     mean_fill = df_sec['Закрытие потребности %'].mean()
     wavg_fill = np.average(df_sec['Закрытие потребности %'], weights=df_sec['Продажа с ЗЦ сумма']) if df_sec['Продажа с ЗЦ сумма'].sum() else np.nan
 
-    st.subheader(title)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Среднее списания %", f"{mean_waste:.1f}")
     c2.metric("Взв. среднее списания %", f"{wavg_waste:.1f}")
     c3.metric("Среднее закрытие %", f"{mean_fill:.1f}")
     c4.metric("Взв. среднее закрытие %", f"{wavg_fill:.1f}")
 
+    # Таблица с заливкой
     cols = ['Категория', 'Группа', 'Name_tov',
             'Списания %', 'Закрытие потребности %',
             'Продажа с ЗЦ сумма', 'Оценка аномалии', 'Комбинированный скор']
-    st.dataframe(
-        df_sec[cols].style
-            .format({
-                'Списания %': '{:.1f}', 'Закрытие потребности %': '{:.1f}',
-                'Продажа с ЗЦ сумма': '{:.0f}',
-                'Оценка аномалии': '{:.3f}', 'Комбинированный скор': '{:.2f}'
-            }),
-        use_container_width=True
-    )
+    styler = df_sec[cols].style.format({
+        'Списания %': '{:.1f}', 'Закрытие потребности %': '{:.1f}',
+        'Продажа с ЗЦ сумма': '{:.0f}',
+        'Оценка аномалии': '{:.3f}', 'Комбинированный скор': '{:.2f}'
+    })
+    # Добавляем градиент
+    if waste_range:
+        styler = styler.background_gradient(subset=['Списания %'], cmap=cmap, vmin=waste_range[0], vmax=waste_range[1])
+    else:
+        styler = styler.background_gradient(subset=['Списания %'], cmap=cmap)
+    if fill_range:
+        styler = styler.background_gradient(subset=['Закрытие потребности %'], cmap=cmap, vmin=fill_range[0], vmax=fill_range[1])
+    else:
+        styler = styler.background_gradient(subset=['Закрытие потребности %'], cmap=cmap)
+    st.dataframe(styler, use_container_width=True)
 
 def main():
     st.set_page_config(page_title="Аномалии", layout="wide")
@@ -69,17 +77,29 @@ def main():
     df = load_data(uploaded)
     df = compute_scores(df)
 
-    # conditions
     low_cond = (df['Списания %'].between(0.5, 8)) & (df['Закрытие потребности %'].between(10, 75))
     high_cond = (df['Списания %'] >= 20) & (df['Закрытие потребности %'] >= 80)
 
     low_df = filter_sort(df, low_cond)
     high_df = filter_sort(df, high_cond)
 
-    display_section(low_df, "Низкие списания + Низкое закрытие потребности")
-    display_section(high_df, "Высокие списания + Высокое закрытие потребности")
+    # Отображение разделов с указанием диапазонов для градиентов
+    display_section(
+        low_df,
+        "Низкие списания + Низкое закрытие потребности",
+        cmap='Greens',
+        waste_range=(0.5, 8),
+        fill_range=(10, 75)
+    )
+    display_section(
+        high_df,
+        "Высокие списания + Высокое закрытие потребности",
+        cmap='Reds',
+        waste_range=(20, df['Списания %'].max()),
+        fill_range=(80, df['Закрытие потребности %'].max())
+    )
 
-    # donut
+    # Донат-диаграмма
     total = len(df)
     counts = {
         "Низкие": len(low_df),
@@ -89,7 +109,7 @@ def main():
     fig = px.pie(names=list(counts.keys()), values=list(counts.values()), hole=0.4)
     st.plotly_chart(fig, use_container_width=True)
 
-    # download
+    # Скачивание
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df.to_excel(writer, sheet_name='Низкие аномалии', index=False)
