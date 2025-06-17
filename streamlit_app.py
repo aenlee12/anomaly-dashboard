@@ -108,6 +108,9 @@ def main():
         "Низкое закрытие % диапазон",
         0.0, 100.0, low_fill_def
     )
+    # Разделитель
+    st.sidebar.markdown("---")
+
     high_waste = st.sidebar.slider(
         "Высокие списания % порог",
         0.0, 200.0, high_waste_def
