@@ -67,6 +67,44 @@ def main():
 
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
+# 1) Диаграмма полной картины
+st.subheader("Визуализация всех SKU: аномалии vs выручка")
+fig_all = px.scatter(
+    df,
+    x='Списания %',
+    y='Закрытие потребности %',
+    color='anomaly_score',          # или 'combined_score'
+    size='Продажа с ЗЦ сумма',
+    hover_data=['Категория','Группа','Name_tov'],
+    color_continuous_scale='RdPu',  # пурпурно-красная шкала
+    title="Аномалии (анализ IsolationForest)",
+)
+st.plotly_chart(fig_all, use_container_width=True)
+
+# 2) Если нужно — тоже для уже отобранных low_df и high_df
+st.subheader("Низкие аномалии (после фильтра)")
+fig_low = px.scatter(
+    low_df,
+    x='Списания %', y='Закрытие потребности %',
+    color='combined_score', 
+    size='Продажа с ЗЦ сумма',
+    hover_data=['Name_tov','Группа'],
+    color_continuous_scale='Purples',
+    title="Низкие списания + низкое закрытие",
+)
+st.plotly_chart(fig_low, use_container_width=True)
+
+st.subheader("Высокие аномалии (после фильтра)")
+fig_high = px.scatter(
+    high_df,
+    x='Списания %', y='Закрытие потребности %',
+    color='combined_score', 
+    size='Продажа с ЗЦ сумма',
+    hover_data=['Name_tov','Группа'],
+    color_continuous_scale='Purples',
+    title="Высокие списания + высокое закрытие",
+)
+st.plotly_chart(fig_high, use_container_width=True)
 
     sale_min, sale_max = float(df['Продажа с ЗЦ сумма'].min()), float(df['Продажа с ЗЦ сумма'].max())
 
