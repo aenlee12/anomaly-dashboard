@@ -12,11 +12,13 @@ def load_and_prepare(path):
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     df['Списания %'] = pd.to_numeric(
-        df['ЗЦ2_срок_качество_%'].str.replace(',', '.').str.rstrip('%'),
+        df['ЗЦ2_срок_качество_%']
+          .str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Закрытие потребности %'] = pd.to_numeric(
-        df['Закрытие потребности_%'].str.replace(',', '.').str.rstrip('%'),
+        df['Закрытие потребности_%']
+          .str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(
@@ -29,11 +31,11 @@ def score_global(df):
     X = df[['Списания %','Закрытие потребности %']]
     iso = IsolationForest(contamination=0.05, random_state=42)
     iso.fit(X)
-    raw = iso.decision_function(X)                     # numpy array
-    anom = -raw                                        # отрицательные → положительные
-    df['anomaly_score'] = np.maximum(anom, 0)          # теперь точно ≥0
+    raw = iso.decision_function(X)
+    anom = -raw
+    df['anomaly_score']    = np.maximum(anom, 0)
     df['anomaly_severity'] = df['anomaly_score']
-    df['combined_score'] = df['anomaly_severity'] * df['Продажа с ЗЦ сумма']
+    df['combined_score']   = df['anomaly_severity'] * df['Продажа с ЗЦ сумма']
     return df
 
 @st.cache_data
@@ -48,7 +50,7 @@ def score_by_group(df):
         anom = -raw
         df.loc[sub.index, 'group_anomaly_score'] = np.maximum(anom, 0)
     df['group_anomaly_severity'] = df['group_anomaly_score']
-    df['group_combined_score'] = df['group_anomaly_severity'] * df['Продажа с ЗЦ сумма']
+    df['group_combined_score']   = df['group_anomaly_severity'] * df['Продажа с ЗЦ сумма']
     return df
 
 def display_table(df, cols, rename_map, title):
@@ -68,7 +70,7 @@ def display_table(df, cols, rename_map, title):
         .background_gradient(subset=['Списания %'],            cmap='Reds')
         .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
     )
-    # цвет для appropriate скор
+    # Добавляем градиент к нужному скору
     if 'Скор (руб.)' in rename_map.values():
         styled = styled.background_gradient(subset=['Скор (руб.)'], cmap='Purples')
     else:
@@ -86,9 +88,9 @@ def main():
     df = score_global(df)
     df = score_by_group(df)
 
-    # Относительная доля в группе
+    # Доля в группе
     df['sales_share_in_group'] = (
-        df['Продажа с ЗЦ сумма'] 
+        df['Продажа с ЗЦ сумма']
         / df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
     ).fillna(0)
 
@@ -96,22 +98,41 @@ def main():
     sale_min, sale_max = float(df['Продажа с ЗЦ сумма'].min()), float(df['Продажа с ЗЦ сумма'].max())
     preset = st.sidebar.radio("Пресет чувствительности", ["Нет", "Слабая", "Средняя", "Высокая"])
     if preset == "Слабая":
-        sale_def, lw_def, lf_def, hw_def, hf_def = (sale_min, sale_max), (0.5,15), (5,85), 15, 60
+        sale_def = (sale_min, sale_max)
+        low_waste_def, low_fill_def = (0.5, 15.0), (5.0, 85.0)
+        high_waste_def, high_fill_def = 15.0, 60.0
     elif preset == "Средняя":
-        sale_def, lw_def, lf_def, hw_def, hf_def = (sale_min, sale_max), (0.5,8), (10,75), 20, 80
+        sale_def = (sale_min, sale_max)
+        low_waste_def, low_fill_def = (0.5, 8.0), (10.0, 75.0)
+        high_waste_def, high_fill_def = 20.0, 80.0
     elif preset == "Высокая":
-        sale_def, lw_def, lf_def, hw_def, hf_def = (sale_min, sale_max), (0.5,5), (20,60), 25, 90
+        sale_def = (sale_min, sale_max)
+        low_waste_def, low_fill_def = (0.5, 5.0), (20.0, 60.0)
+        high_waste_def, high_fill_def = 25.0, 90.0
     else:
-        sale_def, lw_def, lf_def, hw_def, hf_def = (sale_min, sale_max), (0.5,8), (10,75), 20, 80
+        sale_def = (sale_min, sale_max)
+        low_waste_def, low_fill_def = (0.5, 8.0), (10.0, 75.0)
+        high_waste_def, high_fill_def = 20.0, 80.0
 
+    # Sidebar: слайдеры
     st.sidebar.header("Настройки фильтрации")
-    sale_range = st.sidebar.slider("Сумма продаж (руб.)", sale_min, sale_max, sale_def)
+    sale_range = st.sidebar.slider(
+        "Сумма продаж (руб.)", sale_min, sale_max, sale_def, key="sale_range"
+    )
     st.sidebar.divider()
-    low_waste = st.sidebar.slider("Низкие списания %", 0.0, 100.0, lw_def)
-    low_fill  = st.sidebar.slider("Низкое закрытие %", 0.0, 100.0, lf_def)
+    low_waste = st.sidebar.slider(
+        "Низкие списания %", 0.0, 100.0, low_waste_def, key="low_waste"
+    )
+    low_fill = st.sidebar.slider(
+        "Низкое закрытие %", 0.0, 100.0, low_fill_def, key="low_fill"
+    )
     st.sidebar.divider()
-    high_waste = st.sidebar.slider("Высокие списания % порог", 0.0, 200.0, hw_def)
-    high_fill  = st.sidebar.slider("Высокое закрытие % порог", 0.0, 200.0, hf_def)
+    high_waste = st.sidebar.slider(
+        "Высокие списания % порог", 0.0, 200.0, high_waste_def, key="high_waste"
+    )
+    high_fill = st.sidebar.slider(
+        "Высокое закрытие % порог", 0.0, 200.0, high_fill_def, key="high_fill"
+    )
 
     # Фильтрация по выручке
     df_f = df[df['Продажа с ЗЦ сумма'].between(sale_range[0], sale_range[1])]
@@ -136,7 +157,7 @@ def main():
         (df_f['Закрытие потребности %'] >= high_fill)
     ].sort_values('group_combined_score', ascending=False)
 
-    # Вывод: глобальный скор
+    # Вывод глобальных
     cols_gl = [
         'Категория','Группа','Name_tov','Списания %','Закрытие потребности %',
         'Продажа с ЗЦ сумма','sales_share_in_group','anomaly_severity','combined_score'
@@ -146,10 +167,10 @@ def main():
         'anomaly_severity':'Степень аномалии',
         'combined_score':'Скор (руб.)'
     }
-    display_table(low_gl, cols_gl, rename_gl, "Низкие аномалии (глобальный скор)")
-    display_table(high_gl,cols_gl,rename_gl,"Высокие аномалии (глобальный скор)")
+    display_table(low_gl, cols_gl, rename_gl,  "Низкие аномалии (глобальный скор)")
+    display_table(high_gl,cols_gl,rename_gl,  "Высокие аномалии (глобальный скор)")
 
-    # Вывод: групповой скор
+    # Вывод групповых
     cols_gr = [
         'Категория','Группа','Name_tov','Списания %','Закрытие потребности %',
         'Продажа с ЗЦ сумма','sales_share_in_group','group_anomaly_severity','group_combined_score'
@@ -159,19 +180,23 @@ def main():
         'group_anomaly_severity':'Степень аномалии',
         'group_combined_score':'Скор в группе'
     }
-    display_table(low_gr, cols_gr, rename_gr, "Низкие аномалии (групповой скор)")
-    display_table(high_gr,cols_gr,rename_gr,"Высокие аномалии (групповой скор)")
+    display_table(low_gr, cols_gr, rename_gr,  "Низкие аномалии (групповой скор)")
+    display_table(high_gr,cols_gr,rename_gr,  "Высокие аномалии (групповой скор)")
 
-    # Экспорт в Excel
+    # Экспорт
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_gl .to_excel(writer, sheet_name='Low_Global', index=False)
-        high_gl.to_excel(writer, sheet_name='High_Global', index=False)
-        low_gr .to_excel(writer, sheet_name='Low_Group',  index=False)
-        high_gr.to_excel(writer, sheet_name='High_Group', index=False)
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        low_gl .to_excel(w, sheet_name='Low_Global',  index=False)
+        high_gl.to_excel(w, sheet_name='High_Global', index=False)
+        low_gr .to_excel(w, sheet_name='Low_Group',   index=False)
+        high_gr.to_excel(w, sheet_name='High_Group',  index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies_full.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "Скачать Excel",
+        buf,
+        "anomalies_full.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 if __name__ == "__main__":
     main()
