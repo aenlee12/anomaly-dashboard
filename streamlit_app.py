@@ -10,14 +10,19 @@ st.set_page_config(page_title="Аномалии: списания & закрыт
 def load_and_prepare(path):
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
-    df['Списания %'] = pd.to_numeric(df['ЗЦ2_срок_качество_%']
-                                     .str.replace(',', '.').str.rstrip('%'),
-                                     errors='coerce')
-    df['Закрытие потребности %'] = pd.to_numeric(df['Закрытие потребности_%']
-                                                .str.replace(',', '.').str.rstrip('%'),
-                                                errors='coerce')
-    df['Продажа с ЗЦ сумма'] = pd.to_numeric(df['Продажа_с_ЗЦ_сумма'],
-                                            errors='coerce').fillna(0)
+    df['Списания %'] = pd.to_numeric(
+        df['ЗЦ2_срок_качество_%']
+          .str.replace(',', '.').str.rstrip('%'),
+        errors='coerce'
+    )
+    df['Закрытие потребности %'] = pd.to_numeric(
+        df['Закрытие потребности_%']
+          .str.replace(',', '.').str.rstrip('%'),
+        errors='coerce'
+    )
+    df['Продажа с ЗЦ сумма'] = pd.to_numeric(
+        df['Продажа_с_ЗЦ_сумма'], errors='coerce'
+    ).fillna(0)
     return df.dropna(subset=['Списания %','Закрытие потребности %'])
 
 @st.cache_data
@@ -25,8 +30,12 @@ def score_anomalies(df):
     X = df[['Списания %','Закрытие потребности %']]
     iso = IsolationForest(contamination=0.05, random_state=42)
     iso.fit(X)
-    df['anomaly_score'] = -iso.decision_function(X)
-    df['combined_score'] = df['anomaly_score'] * df['Продажа с ЗЦ сумма']
+    raw_scores = iso.decision_function(X)
+    # Отрицательные decision_function → аномальные; делаем positive
+    df['anomaly_score']    = -raw_scores
+    # Величина аномалии как абсолютное значение
+    df['anomaly_severity'] = df['anomaly_score'].abs()
+    df['combined_score']   = df['anomaly_severity'] * df['Продажа с ЗЦ сумма']
     return df
 
 def display_anomaly_table(df, title):
@@ -34,20 +43,21 @@ def display_anomaly_table(df, title):
     cols = [
         'Категория','Группа','Name_tov',
         'Списания %','Закрытие потребности %',
-        'Продажа с ЗЦ сумма','anomaly_score','combined_score'
+        'Продажа с ЗЦ сумма','anomaly_severity','combined_score'
     ]
     styler = df[cols].style.format({
         'Списания %': '{:.1f}',
         'Закрытие потребности %': '{:.1f}',
         'Продажа с ЗЦ сумма': '{:.0f}',
-        'anomaly_score': '{:.3f}',
+        'anomaly_severity': '{:.3f}',
         'combined_score': '{:.0f}',
     })
+    # Цветовая заливка
     styler = (
         styler
-        .background_gradient(subset=['Списания %'], cmap='Reds')
-        .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
-        .background_gradient(subset=['combined_score'], cmap='Purples')
+        .background_gradient(subset=['Списания %'],            cmap='Reds')
+        .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
+        .background_gradient(subset=['combined_score'],        cmap='Purples')
     )
     st.dataframe(styler, use_container_width=True)
 
@@ -60,47 +70,42 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # Определяем min/max по выручке для ползунка
+    # Определяем диапазон по выручке для слайдера
     sale_min, sale_max = float(df['Продажа с ЗЦ сумма'].min()), float(df['Продажа с ЗЦ сумма'].max())
 
-    # --- Выбор пресета ---
+    # --- Пресеты чувствительности ---
     preset = st.sidebar.radio("Пресет чувствительности", [
         "Нет (ручная настройка)",
         "Слабая чувствительность",
         "Средняя чувствительность",
         "Высокая чувствительность"
     ])
-
-    # Задаём default-значения подпресетов
     if preset == "Слабая чувствительность":
-        sale_def = (sale_min, sale_max)
-        low_waste_def = (0.5, 15.0)
-        low_fill_def  = (5.0, 85.0)
+        sale_def      = (sale_min, sale_max)
+        low_waste_def = (0.5, 15.0);  low_fill_def  = (5.0, 85.0)
         high_waste_def, high_fill_def = 15.0, 60.0
     elif preset == "Средняя чувствительность":
-        sale_def = (sale_min, sale_max)
-        low_waste_def = (0.5, 8.0)
-        low_fill_def  = (10.0, 75.0)
+        sale_def      = (sale_min, sale_max)
+        low_waste_def = (0.5, 8.0);   low_fill_def  = (10.0, 75.0)
         high_waste_def, high_fill_def = 20.0, 80.0
     elif preset == "Высокая чувствительность":
-        sale_def = (sale_min, sale_max)
-        low_waste_def = (0.5, 5.0)
-        low_fill_def  = (20.0, 60.0)
+        sale_def      = (sale_min, sale_max)
+        low_waste_def = (0.5, 5.0);   low_fill_def  = (20.0, 60.0)
         high_waste_def, high_fill_def = 25.0, 90.0
     else:
-        # ручная настройка по умолчанию
-        sale_def = (sale_min, sale_max)
-        low_waste_def = (0.5, 8.0)
-        low_fill_def  = (10.0, 75.0)
+        sale_def      = (sale_min, sale_max)
+        low_waste_def = (0.5, 8.0);   low_fill_def  = (10.0, 75.0)
         high_waste_def, high_fill_def = 20.0, 80.0
 
-    # --- Отображаем слайдеры с default из пресета ---
+    # --- Слайдеры фильтрации ---
     st.sidebar.header("Настройки фильтрации")
     sale_range = st.sidebar.slider(
         "Сумма продаж (руб.)",
         sale_min, sale_max, sale_def
     )
+    # ваша дополнительная черточка-делитель
     st.sidebar.divider()
+
     low_waste = st.sidebar.slider(
         "Низкие списания % диапазон",
         0.0, 100.0, low_waste_def
@@ -110,6 +115,7 @@ def main():
         0.0, 100.0, low_fill_def
     )
     st.sidebar.divider()
+
     high_waste = st.sidebar.slider(
         "Высокие списания % порог",
         0.0, 200.0, high_waste_def
@@ -119,7 +125,7 @@ def main():
         0.0, 200.0, high_fill_def
     )
 
-    # --- Фильтрация по продажам и порогам ---
+    # --- Отбор и сортировка ---
     df = df[
         (df['Продажа с ЗЦ сумма'] >= sale_range[0]) &
         (df['Продажа с ЗЦ сумма'] <= sale_range[1])
@@ -133,20 +139,20 @@ def main():
         (df['Закрытие потребности %'] >= high_fill)
     ].sort_values('combined_score', ascending=False)
 
-    # --- Вывод таблиц ---
+    # --- Показ таблиц ---
     display_anomaly_table(low_df,  "Низкие списания + низкое закрытие потребности")
     display_anomaly_table(high_df, "Высокие списания + высокое закрытие потребности")
 
-    # --- Скачать Excel ---
+    # --- Экспорт в Excel ---
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_df.to_excel(writer, sheet_name='Низкие', index=False)
+        low_df .to_excel(writer, sheet_name='Низкие',  index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
     st.download_button(
         "Скачать результаты в Excel",
         data=buf,
-        file_name="anomalies.xlsx",
+        file_name="anomalies_fixed.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
