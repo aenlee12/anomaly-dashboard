@@ -5,8 +5,10 @@ from io import BytesIO
 from sklearn.ensemble import IsolationForest
 import plotly.express as px
 
-def load_data(uploaded):
-    df = pd.read_csv(uploaded)
+# 1. Загрузка и подготовка данных
+@st.cache_data
+def load_data(file):
+    df = pd.read_csv(file)
     df.columns = df.columns.str.strip()
     df['Списания %'] = (
         df['ЗЦ2_срок_качество_%']
@@ -19,122 +21,108 @@ def load_data(uploaded):
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df['Продажа_с_ЗЦ_сумма'], errors='coerce').fillna(0)
     return df.dropna(subset=['Списания %', 'Закрытие потребности %'])
 
+# 2. Вычисление скорингов
+@st.cache_data
 def compute_scores(df):
+    # Обучаем Isolation Forest на двух признаках
     X = df[['Списания %', 'Закрытие потребности %']]
     model = IsolationForest(contamination=0.05, random_state=42)
     model.fit(X)
-    df['Оценка аномалии'] = -model.decision_function(X)  # higher = more anomalous
-    df['Комбинированный скор'] = df['Оценка аномалии'] * df['Продажа с ЗЦ сумма']
+    scores = model.decision_function(X)
+    df['anomaly_score'] = -scores  # чем выше, тем более аномально
+    # Доля продаж в группе
+    df['sales_share_in_group'] = (
+        df['Продажа с ЗЦ сумма'] /
+        df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
+    )
+    # Комбинированный скор: аномалия × вес (продажи)
+    df['combined_score'] = df['anomaly_score'] * df['Продажа с ЗЦ сумма']
+    # Нормировка комбинированного скора в [0;1]
+    max_cs = df['combined_score'].abs().max()
+    df['relative_combined_score'] = df['combined_score'] / max_cs if max_cs != 0 else 0
     return df
 
-def filter_sort(df, condition):
-    return df[condition].sort_values('Комбинированный скор', ascending=False)
-
-def display_section(df_sec, title, cmap, waste_range=None, fill_range=None):
-    st.subheader(f"{title} (Найдено: {len(df_sec)})")
-    # Метрики
-    mean_waste = df_sec['Списания %'].mean()
-    wavg_waste = np.average(df_sec['Списания %'], weights=df_sec['Продажа с ЗЦ сумма']) if df_sec['Продажа с ЗЦ сумма'].sum() else np.nan
-    mean_fill = df_sec['Закрытие потребности %'].mean()
-    wavg_fill = np.average(df_sec['Закрытие потребности %'], weights=df_sec['Продажа с ЗЦ сумма']) if df_sec['Продажа с ЗЦ сумма'].sum() else np.nan
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Среднее списания %", f"{mean_waste:.1f}")
-    c2.metric("Взв. среднее списания %", f"{wavg_waste:.1f}")
-    c3.metric("Среднее закрытие %", f"{mean_fill:.1f}")
-    c4.metric("Взв. среднее закрытие %", f"{wavg_fill:.1f}")
-
-    # Стилизация таблицы
-    cols = ['Категория', 'Группа', 'Name_tov',
-            'Списания %', 'Закрытие потребности %',
-            'Продажа с ЗЦ сумма', 'Оценка аномалии', 'Комбинированный скор']
-    styler = df_sec[cols].style.format({
-        'Списания %': '{:.1f}', 'Закрытие потребности %': '{:.1f}',
-        'Продажа с ЗЦ сумма': '{:.0f}',
-        'Оценка аномалии': '{:.3f}', 'Комбинированный скор': '{:.2f}'
-    })
-    if waste_range:
-        styler = styler.background_gradient(subset=['Списания %'], cmap=cmap, vmin=waste_range[0], vmax=waste_range[1])
-    else:
-        styler = styler.background_gradient(subset=['Списания %'], cmap=cmap)
-    if fill_range:
-        styler = styler.background_gradient(subset=['Закрытие потребности %'], cmap=cmap, vmin=fill_range[0], vmax=fill_range[1])
-    else:
-        styler = styler.background_gradient(subset=['Закрытие потребности %'], cmap=cmap)
-    st.dataframe(styler, use_container_width=True)
-
-def display_subcategory_impact(df, title):
-    st.subheader(f"Влияние на подкатегории: {title}")
-    total_sales_by_group = df.groupby('Группа')['Продажа с ЗЦ сумма'].sum()
-    impact = (
-        df.groupby('Группа').apply(
-            lambda sub: pd.Series({
-                'Количество позиций': len(sub),
-                'Сумма продаж аномалии': sub['Продажа с ЗЦ сумма'].sum(),
-                'Доля продаж (%)': sub['Продажа с ЗЦ сумма'].sum() / total_sales_by_group[sub.name] * 100,
-                'Средняя оценка аномалии': sub['Оценка аномалии'].mean(),
-                'Взв. средняя оценка': np.average(sub['Оценка аномалии'], weights=sub['Продажа с ЗЦ сумма']),
-                'Суммарный комб. скор': sub['Комбинированный скор'].sum()
-            })
-        )
-        .reset_index()
-    )
-    st.dataframe(impact.style.format({
-        'Сумма продаж аномалии': '{:.0f}',
-        'Доля продаж (%)': '{:.1f}',
-        'Средняя оценка аномалии': '{:.3f}',
-        'Взв. средняя оценка': '{:.3f}',
-        'Суммарный комб. скор': '{:.2f}'
-    }), use_container_width=True)
-
+# 3. Главная функция приложения
 def main():
-    st.set_page_config(page_title="Аномалии", layout="wide")
-    st.title("Анализ аномалий: списания и закрытие потребности")
+    st.set_page_config(page_title="Anomaly Dashboard", layout="wide")
+    st.title("Dashboard аномалий: списания и закрытие потребности")
 
     uploaded = st.file_uploader("Загрузите CSV-файл", type="csv")
     if not uploaded:
-        st.info("Пожалуйста, загрузите файл для анализа")
+        st.info("Загрузите файл для анализа")
         return
 
+    # Загрузка и скоринг
     df = load_data(uploaded)
     df = compute_scores(df)
 
-    low_cond = df['Списания %'].between(0.5, 8) & df['Закрытие потребности %'].between(10, 75)
-    high_cond = (df['Списания %'] >= 20) & (df['Закрытие потребности %'] >= 80)
+    # 4. Параметры фильтрации
+    p_anom = st.sidebar.slider("Перцентиль anomaly_score", 50, 99, 90)
+    p_comb = st.sidebar.slider("Перцентиль combined_score", 50, 99, 95)
+    th_sales = st.sidebar.slider("Мин. доля продаж в группе (%)", 0.0, 20.0, 5.0) / 100
+    top_n = st.sidebar.number_input("Число топ-артикулов", min_value=5, max_value=100, value=30)
 
-    low_df = filter_sort(df, low_cond)
-    high_df = filter_sort(df, high_cond)
+    # 5. Фильтрация реальных аномалий
+    thr_anom = df['anomaly_score'].quantile(p_anom/100)
+    thr_comb = df['combined_score'].quantile(p_comb/100)
+    is_real = (
+        (df['anomaly_score'] >= thr_anom) &
+        (df['sales_share_in_group'] >= th_sales) &
+        (df['combined_score'] >= thr_comb)
+    )
+    real_anoms = df[is_real].copy().sort_values('combined_score', ascending=False)
 
-    display_section(low_df, "Низкие списания + Низкое закрытие потребности", 'Greens', (0.5, 8), (10, 75))
-    display_section(high_df, "Высокие списания + Высокое закрытие потребности", 'Reds', (20, df['Списания %'].max()), (80, df['Закрытие потребности %'].max()))
+    # 6. Метрики ключевые
+    st.subheader("Основные метрики")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Найдено аномалий", len(real_anoms))
+    c2.metric("Порог anomaly_score", f"{thr_anom:.3f}")
+    c3.metric("Порог combined_score", f"{thr_comb:.2f}")
+    c4.metric("Мин. доля продаж", f"{th_sales*100:.1f}%")
 
-    # вкладка влияния на подкатегории для обеих групп
-    display_subcategory_impact(low_df, "Низкие списания + Низкое закрытие")
-    display_subcategory_impact(high_df, "Высокие списания + Высокое закрытие")
+    # 7. Таблица топ-N аномалий
+    st.subheader(f"Топ-{top_n} артикулов по combined_score")
+    cols = ['Категория','Группа','Name_tov',
+            'Списания %','Закрытие потребности %',
+            'Продажа с ЗЦ сумма','sales_share_in_group',
+            'anomaly_score','combined_score','relative_combined_score']
+    table = real_anoms[cols].head(top_n)
+    st.dataframe(table.style.format({
+        'Списания %': '{:.1f}',
+        'Закрытие потребности %': '{:.1f}',
+        'Продажа с ЗЦ сумма': '{:.0f}',
+        'sales_share_in_group': '{:.2%}',
+        'anomaly_score': '{:.3f}',
+        'combined_score': '{:.2f}',
+        'relative_combined_score': '{:.2%}'
+    }), use_container_width=True)
 
-    # Донат-диаграмма
-    total = len(df)
-    counts = {"Низкие": len(low_df), "Высокие": len(high_df), "Остальные": total - len(low_df) - len(high_df)}
-    fig = px.pie(names=list(counts.keys()), values=list(counts.values()), hole=0.4)
-    st.plotly_chart(fig, use_container_width=True)
+    # 8. Влияние по категориям
+    st.subheader("Влияние по группам")
+    grp = (
+        real_anoms.groupby('Группа')
+        .agg(Количество=('Name_tov','count'),
+             Сумма_потерь=('combined_score','sum'),
+             Средн_anom=('anomaly_score','mean'),
+             Средн_rel_cs=('relative_combined_score','mean'))
+        .reset_index()
+    )
+    st.dataframe(grp.style.format({
+        'Сумма_потерь':'{:.2f}',
+        'Средн_anom':'{:.3f}',
+        'Средн_rel_cs':'{:.2%}'
+    }), use_container_width=True)
 
-    # Скачивание
+    # 9. Скачивание отчёта
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_df.to_excel(writer, sheet_name='Низкие аномалии', index=False)
-        high_df.to_excel(writer, sheet_name='Высокие аномалии', index=False)
-        # сохраняем и влияние на подкатегории
-        display_low = low_df[['Группа','Комбинированный скор','Продажа с ЗЦ сумма']]
-        display_high = high_df[['Группа','Комбинированный скор','Продажа с ЗЦ сумма']]
-        impact_low = low_df.groupby('Группа').apply(lambda sub: sub['Комбинированный скор'].sum()).reset_index(name='Суммарный комб. скор')
-        impact_high = high_df.groupby('Группа').apply(lambda sub: sub['Комбинированный скор'].sum()).reset_index(name='Суммарный комб. скор')
-        impact_low.to_excel(writer, sheet_name='Влияние низких', index=False)
-        impact_high.to_excel(writer, sheet_name='Влияние высоких', index=False)
+        table.to_excel(writer, sheet_name='Топ N', index=False)
+        grp.to_excel(writer, sheet_name='Влияние по группам', index=False)
     buf.seek(0)
     st.download_button(
-        "Скачать отчет XLSX",
+        "Скачать отчёт в Excel",
         data=buf,
-        file_name="anomalies_full_report.xlsx",
+        file_name="anomalies_insights.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
