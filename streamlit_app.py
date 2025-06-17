@@ -11,13 +11,11 @@ def load_and_prepare(path):
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     df['Списания %'] = pd.to_numeric(
-        df['ЗЦ2_срок_качество_%']
-          .str.replace(',', '.').str.rstrip('%'),
+        df['ЗЦ2_срок_качество_%'].str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Закрытие потребности %'] = pd.to_numeric(
-        df['Закрытие потребности_%']
-          .str.replace(',', '.').str.rstrip('%'),
+        df['Закрытие потребности_%'].str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(
@@ -31,9 +29,7 @@ def score_anomalies(df):
     iso = IsolationForest(contamination=0.05, random_state=42)
     iso.fit(X)
     raw_scores = iso.decision_function(X)
-    # Отрицательные decision_function → аномальные; делаем positive
     df['anomaly_score']    = -raw_scores
-    # Величина аномалии как абсолютное значение
     df['anomaly_severity'] = df['anomaly_score'].abs()
     df['combined_score']   = df['anomaly_severity'] * df['Продажа с ЗЦ сумма']
     return df
@@ -52,12 +48,12 @@ def display_anomaly_table(df, title):
         'anomaly_severity': '{:.3f}',
         'combined_score': '{:.0f}',
     })
-    # Цветовая заливка
     styler = (
         styler
         .background_gradient(subset=['Списания %'],            cmap='Reds')
         .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
-        .background_gradient(subset=['combined_score'],        cmap='Purples')
+        # Перевёрнутый пурпурный: меньшие combined_score – более насыщенные
+        .background_gradient(subset=['combined_score'], cmap='Purples_r')
     )
     st.dataframe(styler, use_container_width=True)
 
@@ -70,10 +66,9 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # Определяем диапазон по выручке для слайдера
     sale_min, sale_max = float(df['Продажа с ЗЦ сумма'].min()), float(df['Продажа с ЗЦ сумма'].max())
 
-    # --- Пресеты чувствительности ---
+    # Пресеты
     preset = st.sidebar.radio("Пресет чувствительности", [
         "Нет (ручная настройка)",
         "Слабая чувствительность",
@@ -81,80 +76,58 @@ def main():
         "Высокая чувствительность"
     ])
     if preset == "Слабая чувствительность":
-        sale_def      = (sale_min, sale_max)
-        low_waste_def = (0.5, 15.0);  low_fill_def  = (5.0, 85.0)
-        high_waste_def, high_fill_def = 15.0, 60.0
+        sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
+            (sale_min, sale_max),(0.5,15.0),(5.0,85.0),15.0,60.0
+        )
     elif preset == "Средняя чувствительность":
-        sale_def      = (sale_min, sale_max)
-        low_waste_def = (0.5, 8.0);   low_fill_def  = (10.0, 75.0)
-        high_waste_def, high_fill_def = 20.0, 80.0
+        sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
+            (sale_min, sale_max),(0.5,8.0),(10.0,75.0),20.0,80.0
+        )
     elif preset == "Высокая чувствительность":
-        sale_def      = (sale_min, sale_max)
-        low_waste_def = (0.5, 5.0);   low_fill_def  = (20.0, 60.0)
-        high_waste_def, high_fill_def = 25.0, 90.0
+        sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
+            (sale_min, sale_max),(0.5,5.0),(20.0,60.0),25.0,90.0
+        )
     else:
-        sale_def      = (sale_min, sale_max)
-        low_waste_def = (0.5, 8.0);   low_fill_def  = (10.0, 75.0)
-        high_waste_def, high_fill_def = 20.0, 80.0
+        sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
+            (sale_min, sale_max),(0.5,8.0),(10.0,75.0),20.0,80.0
+        )
 
-    # --- Слайдеры фильтрации ---
+    # Слайдеры
     st.sidebar.header("Настройки фильтрации")
-    sale_range = st.sidebar.slider(
-        "Сумма продаж (руб.)",
-        sale_min, sale_max, sale_def
-    )
-    # ваша дополнительная черточка-делитель
+    sale_range = st.sidebar.slider("Сумма продаж (руб.)", sale_min, sale_max, sale_def)
     st.sidebar.divider()
-
-    low_waste = st.sidebar.slider(
-        "Низкие списания % диапазон",
-        0.0, 100.0, low_waste_def
-    )
-    low_fill = st.sidebar.slider(
-        "Низкое закрытие % диапазон",
-        0.0, 100.0, low_fill_def
-    )
+    low_waste = st.sidebar.slider("Низкие списания % диапазон", 0.0, 100.0, low_waste_def)
+    low_fill  = st.sidebar.slider("Низкое закрытие % диапазон", 0.0, 100.0, low_fill_def)
     st.sidebar.divider()
+    high_waste = st.sidebar.slider("Высокие списания % порог", 0.0, 200.0, high_waste_def)
+    high_fill  = st.sidebar.slider("Высокое закрытие % порог", 0.0, 200.0, high_fill_def)
 
-    high_waste = st.sidebar.slider(
-        "Высокие списания % порог",
-        0.0, 200.0, high_waste_def
-    )
-    high_fill = st.sidebar.slider(
-        "Высокое закрытие % порог",
-        0.0, 200.0, high_fill_def
-    )
-
-    # --- Отбор и сортировка ---
+    # Фильтрация и сортировка по combined_score ↑
     df = df[
         (df['Продажа с ЗЦ сумма'] >= sale_range[0]) &
         (df['Продажа с ЗЦ сумма'] <= sale_range[1])
     ]
-    low_df = df[
+    low_df  = df[
         df['Списания %'].between(*low_waste) &
         df['Закрытие потребности %'].between(*low_fill)
-    ].sort_values('combined_score', ascending=False)
+    ].sort_values('combined_score', ascending=True)   # возрастание
     high_df = df[
         (df['Списания %'] >= high_waste) &
         (df['Закрытие потребности %'] >= high_fill)
-    ].sort_values('combined_score', ascending=False)
+    ].sort_values('combined_score', ascending=True)   # возрастание
 
-    # --- Показ таблиц ---
+    # Показ
     display_anomaly_table(low_df,  "Низкие списания + низкое закрытие потребности")
     display_anomaly_table(high_df, "Высокие списания + высокое закрытие потребности")
 
-    # --- Экспорт в Excel ---
+    # Экспорт
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df .to_excel(writer, sheet_name='Низкие',  index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button(
-        "Скачать результаты в Excel",
-        data=buf,
-        file_name="anomalies_fixed.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("Скачать в Excel", buf, "anomalies_fixed.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
