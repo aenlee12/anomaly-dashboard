@@ -114,7 +114,7 @@ def main():
         )
     elif preset == "Высокая чувствительность":
         sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
-            (sale_min, sale_max), (0.5, 5.0), (20.0, 60.0), 25.0, 90.0
+            (sale_min, sale_max), (0.5, 5.0), (20.0, 60.0), 40.0, 80.0
         )
     else:
         sale_def, low_waste_def, low_fill_def, high_waste_def, high_fill_def = (
