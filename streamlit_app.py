@@ -100,6 +100,7 @@ def main():
         "Сумма продаж (руб.)",
         sale_min, sale_max, sale_def
     )
+    st.sidebar.divider()
     low_waste = st.sidebar.slider(
         "Низкие списания % диапазон",
         0.0, 100.0, low_waste_def
