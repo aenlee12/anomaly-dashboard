@@ -25,7 +25,7 @@ def load_and_prepare(path):
         df['Продажа_с_ЗЦ_сумма'], errors='coerce'
     ).fillna(0)
     df = df.dropna(subset=['Списания %','Закрытие потребности %','Группа','Name_tov'])
-    # Агрегируем по позициям (несколько периодов → один)
+    # Агрегируем по позиции, сводим несколько периодов
     def agg_group(g):
         total_sales = g['Продажа с ЗЦ сумма'].sum()
         waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
@@ -37,17 +37,24 @@ def load_and_prepare(path):
             'Закрытие потребности %': fill,
             'Продажа с ЗЦ сумма': total_sales
         })
-    df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
+    df = df.groupby(['Категория','Группа','Name_tov']).apply(agg_group).reset_index()
+    # Среднее списание в группе
+    df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
+    # Средневзвешенное списание в группе
+    weighted = df.groupby('Группа').apply(
+        lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
+        if g['Продажа с ЗЦ сумма'].sum() > 0 else g['Списания %'].mean()
+    ).to_dict()
+    df['group_weighted_mean_waste'] = df['Группа'].map(weighted)
     return df
 
 @st.cache_data
 def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
-    # Считаем аномалии внутри каждой группы
     for grp, sub in df.groupby('Группа'):
         X = sub[['Списания %','Закрытие потребности %']]
-        iso = IsolationForest(contamination=0.05, random_state=42)
+        iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
         iso.fit(X)
         raw = iso.decision_function(X)
         df.loc[sub.index, 'anomaly_score'] = -raw
@@ -57,7 +64,7 @@ def score_anomalies(df):
         df['Продажа с ЗЦ сумма'] /
         df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
     ).fillna(0)
-    # Итоговый скор внутри группы
+    # Скор внутри группы
     df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group']
     return df
 
@@ -65,26 +72,31 @@ def display_anomaly_table(df, title):
     st.subheader(f"{title}  (найдено {len(df)})")
     cols = [
         'Категория','Группа','Name_tov',
-        'Списания %','Закрытие потребности %',
-        'Продажа с ЗЦ сумма','anomaly_severity','combined_score'
+        'Списания %','group_mean_waste','group_weighted_mean_waste',
+        'Закрытие потребности %','Продажа с ЗЦ сумма',
+        'anomaly_severity','combined_score'
     ]
     rename_map = {
-        'anomaly_severity': 'Степень аномалии',
-        'combined_score':   'Скор в группе'
+        'group_mean_waste':            'Среднее списание в группе %',
+        'group_weighted_mean_waste':   'Средневзв. списание в группе %',
+        'anomaly_severity':            'Степень аномалии',
+        'combined_score':              'Скор в группе'
     }
     styler = (
         df[cols]
         .rename(columns=rename_map)
         .style.format({
-            'Списания %':             '{:.1f}',
-            'Закрытие потребности %': '{:.1f}',
-            'Продажа с ЗЦ сумма':     '{:.0f}',
-            'Степень аномалии':       '{:.3f}',
-            'Скор в группе':          '{:.3f}'
+            'Списания %':                     '{:.1f}',
+            'Среднее списание в группе %':    '{:.1f}',
+            'Средневзв. списание в группе %': '{:.1f}',
+            'Закрытие потребности %':         '{:.1f}',
+            'Продажа с ЗЦ сумма':             '{:.0f}',
+            'Степень аномалии':               '{:.3f}',
+            'Скор в группе':                  '{:.3f}'
         })
         .background_gradient(subset=['Списания %'],            cmap='Reds')
         .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
-        .background_gradient(subset=['Скор в группе'],       cmap='Purples')
+        .background_gradient(subset=['Скор в группе'],        cmap='Purples')
     )
     st.dataframe(styler, use_container_width=True)
 
@@ -97,26 +109,26 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # Пороговые фильтры с ползунками и ручным вводом
+    # Фильтры: ползунки и ручной ввод
     sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
     st.sidebar.header("Фильтры по выручке")
     sale_slider = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, (sale_min, sale_max))
     sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_slider[0])
     sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, value=sale_slider[1])
 
-    st.sidebar.header("Низкие аномалии")
-    low_waste_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, (0.5, 8.0))
-    low_waste_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, value=low_waste_slider[0])
-    low_waste_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, value=low_waste_slider[1])
-    low_fill_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, (10.0, 75.0))
-    low_fill_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, value=low_fill_slider[0])
-    low_fill_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, value=low_fill_slider[1])
+    st.sidebar.header("Низкие списания + низкое закрытие")
+    lw_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, (0.5, 8.0))
+    lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, value=lw_slider[0])
+    lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, value=lw_slider[1])
+    lf_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, (10.0, 75.0))
+    lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, value=lf_slider[0])
+    lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, value=lf_slider[1])
 
-    st.sidebar.header("Высокие аномалии")
-    high_waste_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, 20.0)
-    high_waste_thr = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, value=high_waste_slider)
-    high_fill_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, 80.0)
-    high_fill_thr = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, value=high_fill_slider)
+    st.sidebar.header("Высокие списания + высокое закрытие")
+    hw_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, 20.0)
+    hw_thr = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, value=hw_slider)
+    hf_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, 80.0)
+    hf_thr = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, value=hf_slider)
 
     # Применяем фильтры
     df = df[
@@ -124,36 +136,37 @@ def main():
         (df['Продажа с ЗЦ сумма'] <= sale_max_in)
     ]
     low_df = df[
-        df['Списания %'].between(low_waste_min, low_waste_max) &
-        df['Закрытие потребности %'].between(low_fill_min, low_fill_max)
+        df['Списания %'].between(lw_min, lw_max) &
+        df['Закрытие потребности %'].between(lf_min, lf_max)
     ].sort_values('combined_score', ascending=False)
     high_df = df[
-        (df['Списания %'] >= high_waste_thr) &
-        (df['Закрытие потребности %'] >= high_fill_thr)
+        (df['Списания %'] >= hw_thr) &
+        (df['Закрытие потребности %'] >= hf_thr)
     ].sort_values('combined_score', ascending=False)
 
-    # Вывод результатов
-    display_anomaly_table(low_df,  "Низкие аномалии (низкие списания + закрытие)")
-    display_anomaly_table(high_df, "Высокие аномалии (высокие списания + закрытие)")
+    display_anomaly_table(low_df,  "Низкие списания + низкое закрытие")
+    display_anomaly_table(high_df, "Высокие списания + высокое закрытие")
 
     # График норм vs аномалии
     mask = df.index.isin(pd.concat([low_df, high_df]).index)
-    df['Статус'] = np.where(mask, 'Аномалия', 'Норма')
+    df_plot = df.copy()
+    df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
     fig = px.scatter(
-        df, x='Списания %', y='Закрытие потребности %',
-        color='Статус', size='Продажа с ЗЦ сумма',
-        opacity=0.6, hover_data=['Name_tov','Группа'],
+        df_plot, x='Списания %', y='Закрытие потребности %',
+        color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
+        hover_data=['Name_tov','Группа'],
         color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'}
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Экспорт в Excel
+    # Экспорт результатов
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_df.to_excel(writer, sheet_name='Low', index=False)
-        high_df.to_excel(writer, sheet_name='High', index=False)
+        low_df.to_excel(writer, sheet_name='Низкие списания + низкое закрытие', index=False)
+        high_df.to_excel(writer, sheet_name='Высокие списания + высокое закрытие', index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx",
+    st.download_button("Скачать результаты в Excel", buf,
+                       "anomalies_group.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
