@@ -25,7 +25,7 @@ def load_and_prepare(path):
         df['Продажа_с_ЗЦ_сумма'], errors='coerce'
     ).fillna(0)
     df = df.dropna(subset=['Списания %','Закрытие потребности %','Группа','Name_tov'])
-    # Агрегируем по позиции, сводим несколько периодов
+    # Агрегация по позиции, сводим несколько периодов
     def agg_group(g):
         total_sales = g['Продажа с ЗЦ сумма'].sum()
         waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
@@ -37,10 +37,9 @@ def load_and_prepare(path):
             'Закрытие потребности %': fill,
             'Продажа с ЗЦ сумма': total_sales
         })
-    df = df.groupby(['Категория','Группа','Name_tov']).apply(agg_group).reset_index()
-    # Среднее списание в группе
+    df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
+    # Среднее и средневзвешенное списание в группе
     df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
-    # Средневзвешенное списание в группе
     weighted = df.groupby('Группа').apply(
         lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
         if g['Продажа с ЗЦ сумма'].sum() > 0 else g['Списания %'].mean()
@@ -59,7 +58,6 @@ def score_anomalies(df):
         raw = iso.decision_function(X)
         df.loc[sub.index, 'anomaly_score'] = -raw
     df['anomaly_severity'] = df['anomaly_score'].abs()
-    # Доля выручки в группе
     df['sales_share_in_group'] = (
         df['Продажа с ЗЦ сумма'] /
         df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
@@ -109,25 +107,57 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # Фильтры: ползунки и ручной ввод
+    # Пресеты чувствительности
     sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
+    preset = st.sidebar.radio("Пресет чувствительности", [
+        "Нет (ручная настройка)",
+        "Слабая чувствительность",
+        "Средняя чувствительность",
+        "Высокая чувствительность"
+    ])
+    if preset == "Слабая чувствительность":
+        sale_def = (sale_min, sale_max)
+        lw_def = (0.5, 15.0)
+        lf_def = (5.0, 85.0)
+        hw_def = 15.0
+        hf_def = 60.0
+    elif preset == "Средняя чувствительность":
+        sale_def = (sale_min, sale_max)
+        lw_def = (0.5, 8.0)
+        lf_def = (10.0, 75.0)
+        hw_def = 20.0
+        hf_def = 80.0
+    elif preset == "Высокая чувствительность":
+        sale_def = (sale_min, sale_max)
+        lw_def = (0.5, 5.0)
+        lf_def = (20.0, 60.0)
+        hw_def = 25.0
+        hf_def = 90.0
+    else:
+        sale_def = (sale_min, sale_max)
+        lw_def = (0.5, 8.0)
+        lf_def = (10.0, 75.0)
+        hw_def = 20.0
+        hf_def = 80.0
+
+    # Фильтры: ползунки + ручной ввод
     st.sidebar.header("Фильтры по выручке")
-    sale_slider = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, (sale_min, sale_max))
-    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_slider[0])
-    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, value=sale_slider[1])
+    sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
+    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_range[0])
+    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, value=sale_range[1])
 
     st.sidebar.header("Низкие списания + низкое закрытие")
-    lw_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, (0.5, 8.0))
+    lw_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, lw_def)
     lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, value=lw_slider[0])
     lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, value=lw_slider[1])
-    lf_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, (10.0, 75.0))
+    lf_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def)
     lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, value=lf_slider[0])
     lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, value=lf_slider[1])
 
     st.sidebar.header("Высокие списания + высокое закрытие")
-    hw_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, 20.0)
+    hw_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, hw_def)
     hw_thr = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, value=hw_slider)
-    hf_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, 80.0)
+    hf_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, hf_def)
     hf_thr = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, value=hf_slider)
 
     # Применяем фильтры
@@ -153,8 +183,8 @@ def main():
     df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
     fig = px.scatter(
         df_plot, x='Списания %', y='Закрытие потребности %',
-        color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
-        hover_data=['Name_tov','Группа'],
+        color='Статус', size='Продажа с ЗЦ сумма',
+        opacity=0.6, hover_data=['Name_tov','Группа'],
         color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'}
     )
     st.plotly_chart(fig, use_container_width=True)
