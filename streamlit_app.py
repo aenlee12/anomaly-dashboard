@@ -108,8 +108,10 @@ def main():
     st.sidebar.header("Фильтрация по категориям")
     cats = sorted(df['Категория'].unique())
     sel_cats = st.sidebar.multiselect("Категории", cats, default=cats)
+    # после выбора категорий – фильтруем и обновляем список групп
+    df_cat = df[df['Категория'].isin(sel_cats)]
     st.sidebar.header("Фильтрация по группам")
-    grps = sorted(df['Группа'].unique())
+    grps = sorted(df_cat['Группа'].unique())
     sel_grps = st.sidebar.multiselect("Группы", grps, default=grps)
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
 
@@ -146,7 +148,7 @@ def main():
         hw_def = 20.0
         hf_def = 80.0
 
-    # Фильтры: ползунки и ручной ввод
+    # Фильтры: ползунки + ручной ввод
     st.sidebar.header("Фильтры по выручке")
     sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
     sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_range[0])
