@@ -12,20 +12,18 @@ def load_and_prepare(path):
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     df['Списания %'] = pd.to_numeric(
-        df['ЗЦ2_срок_качество_%']
-          .str.replace(',', '.').str.rstrip('%'),
+        df['ЗЦ2_срок_качество_%'].str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Закрытие потребности %'] = pd.to_numeric(
-        df['Закрытие потребности_%']
-          .str.replace(',', '.').str.rstrip('%'),
+        df['Закрытие потребности_%'].str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
     )
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(
         df['Продажа_с_ЗЦ_сумма'], errors='coerce'
     ).fillna(0)
     df = df.dropna(subset=['Списания %','Закрытие потребности %','Группа','Name_tov'])
-    # Агрегация по позиции, сводим несколько периодов
+    # Агрегация по позиции
     def agg_group(g):
         total_sales = g['Продажа с ЗЦ сумма'].sum()
         waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
@@ -62,7 +60,6 @@ def score_anomalies(df):
         df['Продажа с ЗЦ сумма'] /
         df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
     ).fillna(0)
-    # Скор внутри группы
     df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group']
     return df
 
@@ -107,6 +104,15 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
+    # Фильтрация по категориям и группам
+    st.sidebar.header("Фильтрация по категориям")
+    cats = sorted(df['Категория'].unique())
+    sel_cats = st.sidebar.multiselect("Категории", cats, default=cats)
+    st.sidebar.header("Фильтрация по группам")
+    grps = sorted(df['Группа'].unique())
+    sel_grps = st.sidebar.multiselect("Группы", grps, default=grps)
+    df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
+
     # Пресеты чувствительности
     sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
     preset = st.sidebar.radio("Пресет чувствительности", [
@@ -140,7 +146,7 @@ def main():
         hw_def = 20.0
         hf_def = 80.0
 
-    # Фильтры: ползунки + ручной ввод
+    # Фильтры: ползунки и ручной ввод
     st.sidebar.header("Фильтры по выручке")
     sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
     sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_range[0])
