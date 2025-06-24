@@ -73,19 +73,29 @@ def load_and_prepare(uploaded):
     # Удаление некорректных строк
     df = df.dropna(subset=['Категория','Группа','Name_tov','Формат','Склад','Списания %','Закрытие потребности %'])
 
-    # Агрегация по SKU+Формат+Склад
-    grp = df.groupby(['Категория','Группа','Name_tov','Формат','Склад'])
-    agg = grp.agg(
-        **{
-            'Продажа с ЗЦ сумма': ('Продажа с ЗЦ сумма', 'sum'),
-            'Списания %': (lambda x: np.average(x, weights=df.loc[x.index, 'Продажа с ЗЦ сумма'])),
-            'Закрытие потребности %': (lambda x: np.average(x, weights=df.loc[x.index, 'Продажа с ЗЦ сумма']))
-        }
+        # Агрегация по SKU+Формат+Склад через apply
+    agg = df.groupby(['Категория','Группа','Name_tov','Формат','Склад']).apply(
+        lambda g: pd.Series({
+            'Продажа с ЗЦ сумма': g['Продажа с ЗЦ сумма'].sum(),
+            'Списания %': np.average(
+                g['Списания %'],
+                weights=g['Продажа с ЗЦ сумма']
+            ) if g['Продажа с ЗЦ сумма'].sum() > 0 else 0,
+            'Закрытие потребности %': np.average(
+                g['Закрытие потребности %'],
+                weights=g['Продажа с ЗЦ сумма']
+            ) if g['Продажа с ЗЦ сумма'].sum() > 0 else 0
+        })
     ).reset_index()
 
     # Внутригрупповые метрики
     agg['group_mean_waste'] = agg.groupby('Группа')['Списания %'].transform('mean')
-    wmap = agg.groupby('Группа').apply(lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])).to_dict()
+    wmap = agg.groupby('Группа').apply(
+        lambda g: np.average(
+            g['Списания %'],
+            weights=g['Продажа с ЗЦ сумма']
+        )
+    ).to_dict()
     agg['group_weighted_mean_waste'] = agg['Группа'].map(wmap)
 
     return agg
