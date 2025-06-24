@@ -168,18 +168,48 @@ def main():
     min_sale = st.sidebar.number_input("Мин. выручка", min_sale, max_sale, value=sr[0])
     max_sale = st.sidebar.number_input("Макс. выручка", min_sale, max_sale, value=sr[1])
 
-    # — Пресеты чувствительности
-    
-    sale_min, sale_max = min_sale, max_sale
+        # — Пресеты чувствительности
     preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
-    if preset == "Слабая":
-        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,15),(5,85),15,60)
+    if preset == "Нет":
+        lw_def = (0.0, 100.0)
+        lf_def = (0.0, 100.0)
+        thr_hw_def = 0.0
+        thr_hf_def = 0.0
+    elif preset == "Слабая":
+        lw_def = (0.5, 15.0)
+        lf_def = (5.0, 85.0)
+        thr_hw_def = 15.0
+        thr_hf_def = 60.0
     elif preset == "Средняя":
-        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,8),(10,75),20,80)
-    else:
-        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,5),(20,60),25,90)
+        lw_def = (0.5, 8.0)
+        lf_def = (10.0, 75.0)
+        thr_hw_def = 20.0
+        thr_hf_def = 80.0
+    else:  # Высокая
+        lw_def = (0.5, 5.0)
+        lf_def = (20.0, 60.0)
+        thr_hw_def = 25.0
+        thr_hf_def = 90.0
 
     # — Фильтры через слайдеры и number_input
+    st.sidebar.header("Низкие списания + закрытие")
+    lw = st.sidebar.slider(
+        "Списания % диапазон", 0.0, 100.0, lw_def, step=0.1
+    )
+    min_lw, max_lw = lw
+    lf = st.sidebar.slider(
+        "Закрытие % диапазон", 0.0, 100.0, lf_def, step=0.1
+    )
+    min_lf, max_lf = lf
+
+    st.sidebar.header("Высокие списания + закрытие")
+    thr_hw = st.sidebar.slider(
+        "Порог списания %", 0.0, 100.0, thr_hw_def, step=0.1
+    )
+    thr_hf = st.sidebar.slider(
+        "Порог закрытия %", 0.0, 100.0, thr_hf_def, step=0.1
+    )
+
     st.sidebar.header("Низкие списания + закрытие")
     lw = st.sidebar.slider("Списания % диапазон",0.0,100.0,lw_def,step=0.1)
     min_lw = st.sidebar.number_input("Мин. списания %",0.0,100.0,value=lw[0])
