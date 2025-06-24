@@ -17,19 +17,30 @@ def load_and_prepare(uploaded):
         df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
 
-    # Переименование ключевых колонок (рус/англ)
+        # Переименование ключевых колонок (рус/англ)
+    # Категория и Группа
     col_map = {}
     if 'parent_group_name' in df.columns:
         col_map['parent_group_name'] = 'Категория'
     if 'group_name' in df.columns:
         col_map['group_name'] = 'Группа'
-    if 'format' in df.columns:
-        col_map['format'] = 'Формат'
-    if 'warehouse' in df.columns:
-        col_map['warehouse'] = 'Склад'
     df = df.rename(columns=col_map)
 
+    # Автовыбор колонки Формат
+    fmt_col = next((c for c in df.columns if 'формат' in c.lower()), None)
+    if fmt_col:
+        df = df.rename(columns={fmt_col: 'Формат'})
+    # Автовыбор колонки Склад
+    wh_col = next((c for c in df.columns if 'склад' in c.lower()), None)
+    if wh_col:
+        df = df.rename(columns={wh_col: 'Склад'})
+
     # Проверяем наличие обязательных колонок
+    for req in ['Категория','Группа','Name_tov','Формат','Склад']:
+        if req not in df.columns:
+            raise KeyError(f"Не найдена колонка '{req}'")
+
+    # Поиск полей процентов и суммы
     for req in ['Категория','Группа','Name_tov','Формат','Склад']:
         if req not in df.columns:
             raise KeyError(f"Не найдена колонка '{req}'")
