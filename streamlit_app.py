@@ -40,8 +40,11 @@ def load_and_prepare(uploaded):
         if req not in df.columns:
             raise KeyError(f"В файле нет колонки «{req}»")
 
-    # 4) Считаем продажи
-    sale_col = next(c for c in df.columns if 'продажа' in c.lower())
+    # 4) Считаем продажи (по сумме)
+    sale_col = next((c for c in df.columns 
+                     if 'продажа' in c.lower() and 'сумма' in c.lower()), None)
+    if sale_col is None:
+        raise KeyError("Не найдена колонка с суммой продаж")
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
 
     # 5) Считаем % закрытия
@@ -99,7 +102,6 @@ def load_and_prepare(uploaded):
 def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
-    # обучаем IsolationForest внутри каждой Группы (оставляем как есть)
     for grp, sub in df.groupby('Группа'):
         X = sub[['Списания %','Закрытие потребности %']]
         if len(sub) < 2:
