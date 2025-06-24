@@ -38,16 +38,36 @@ def load_and_prepare(uploaded):
     if missing:
         raise KeyError(f"Отсутствуют колонки: {missing}")
 
-    # Парсинг процентов и сумм
-    waste_col = next(c for c in df.columns if 'срок' in c.lower() and 'качество' in c.lower())
-    fill_col = next(c for c in df.columns if 'закрытие' in c.lower())
+        # Парсинг значений для расчёта списаний и закрытия
+    # Продажа
     sale_col = next(c for c in df.columns if 'продажа' in c.lower())
-
-    df['Списания %'] = pd.to_numeric(df[waste_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce')
-    df['Закрытие потребности %'] = pd.to_numeric(df[fill_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce') * 100.0
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
+    
+    # Закрытие потребности %
+    fill_col = next(c for c in df.columns if 'закрытие' in c.lower())
+    df['Закрытие потребности %'] = pd.to_numeric(
+        df[fill_col].astype(str).str.replace(',','.').str.rstrip('%'),
+        errors='coerce'
+    )
+    
+    # Расчёт ZC2 + срок + качество как списания %
+    # находим соответствующие колонки
+    col_zc2 = next((c for c in df.columns if 'zc2' in c.lower()), None)
+    col_srok = next((c for c in df.columns if 'срок' in c.lower() and 'качество' not in c.lower()), None)
+    col_kach = next((c for c in df.columns if 'качество' in c.lower()), None)
+    if not (col_zc2 and col_srok and col_kach):
+        raise KeyError(f"Не найдены колонки для расчёта списания: ZC2={col_zc2}, срок={col_srok}, качество={col_kach}")
+    df[col_zc2] = pd.to_numeric(df[col_zc2], errors='coerce').fillna(0)
+    df[col_srok] = pd.to_numeric(df[col_srok], errors='coerce').fillna(0)
+    df[col_kach] = pd.to_numeric(df[col_kach], errors='coerce').fillna(0)
+    # вычисляем долю
+    df['Списания %'] = np.where(
+        df['Продажа с ЗЦ сумма'] > 0,
+        (df[col_zc2] + df[col_srok] + df[col_kach]) / df['Продажа с ЗЦ сумма'] * 100,
+        0
+    )
 
-    df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
+    df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
 
     # Сохраняем метаданные формат/склад
     meta = df[['Категория','Группа','Name_tov','Формат','Склад']].drop_duplicates()
