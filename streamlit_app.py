@@ -15,10 +15,9 @@ def load_and_prepare(uploaded):
         df = pd.read_excel(uploaded, engine="openpyxl")
     else:
         df = pd.read_csv(uploaded)
-    df.columns = df.columns.str.strip()  # убираем лишние пробелы
+    df.columns = df.columns.str.strip()
 
-    # 1.1) Переименовываем английские названия колонок, если нужно
-    #    — если в файле уже есть русские "Категория"/"Группа", они сохранятся
+    # 1.1) Переименовываем английские названия, если нужно
     if 'Категория' not in df.columns:
         if 'parent_group_name' in df.columns:
             df = df.rename(columns={'parent_group_name': 'Категория'})
@@ -30,7 +29,7 @@ def load_and_prepare(uploaded):
         else:
             raise KeyError("Не найдена колонка 'Группа' или 'group_name'")
 
-    # 2) Автоопределяем остальные нужные колонки
+    # 2) Автоопределяем колонки
     waste_col = next((c for c in df.columns
                       if "срок" in c.lower() and "качество" in c.lower()), None)
     fill_col  = next((c for c in df.columns
@@ -58,13 +57,13 @@ def load_and_prepare(uploaded):
         df[sale_col], errors='coerce'
     ).fillna(0)
 
-    # 4) Очищаем строки без ключевых полей
+    # 4) Очищаем
     df = df.dropna(subset=[
         'Категория', 'Группа', 'Name_tov',
         'Списания %', 'Закрытие потребности %'
     ])
 
-    # 5) Агрегируем по SKU (категория–группа–товар)
+    # 5) Агрегируем по SKU
     def agg_group(g):
         tot = g['Продажа с ЗЦ сумма'].sum()
         waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
@@ -147,10 +146,11 @@ def main():
     if not uploaded:
         return
 
+    # Подготовка и скоринг
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # sidebar-фильтры (категории, группы, выручка, пресеты и т.д.)
+    # — Sidebar: фильтрация категорий и групп
     st.sidebar.header("Фильтрация по категориям")
     cats = sorted(df['Категория'].unique())
     sel_cats = st.sidebar.multiselect("Категории", cats, default=cats)
@@ -163,16 +163,77 @@ def main():
     sel_grps = st.sidebar.multiselect("Группы", grps_f, default=grps_f)
     df = df[df['Группа'].isin(sel_grps)]
 
-    # … далее ваша логика пресетов, слайдеров и построения графиков без изменений …
+    # — Пресеты чувствительности
+    sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
+    preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
+    if preset == "Слабая":
+        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,15),(5,85),15,60)
+    elif preset == "Средняя":
+        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,8),(10,75),20,80)
+    else:
+        sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,5),(20,60),25,90)
 
-    # пример скачивания
+    # — Фильтры через слайдеры и number_input
+    st.sidebar.header("Выручка")
+    sr = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def, step=1)
+    min_sale = st.sidebar.number_input("Мин. выручка", sale_min, sale_max, value=sr[0])
+    max_sale = st.sidebar.number_input("Макс. выручка", sale_min, sale_max, value=sr[1])
+
+    st.sidebar.header("Низкие списания + закрытие")
+    lw = st.sidebar.slider("Списания % диапазон",0.0,100.0,lw_def,step=0.1)
+    min_lw = st.sidebar.number_input("Мин. списания %",0.0,100.0,value=lw[0])
+    max_lw = st.sidebar.number_input("Макс. списания %",0.0,100.0,value=lw[1])
+    lf = st.sidebar.slider("Закрытие % диапазон",0.0,100.0,lf_def,step=0.1)
+    min_lf = st.sidebar.number_input("Мин. закрытие %",0.0,100.0,value=lf[0])
+    max_lf = st.sidebar.number_input("Макс. закрытие %",0.0,100.0,value=lf[1])
+
+    st.sidebar.header("Высокие списания + закрытие")
+    hw = st.sidebar.slider("Порог списания %",0.0,200.0,hw_def,step=0.1)
+    thr_hw = st.sidebar.number_input("Порог списания % вручную",0.0,200.0,value=hw)
+    hf = st.sidebar.slider("Порог закрытия %",0.0,200.0,hf_def,step=0.1)
+    thr_hf= st.sidebar.number_input("Порог закрытия % вручную",0.0,200.0,value=hf)
+
+    # — Отбор по всем фильтрам
+    df = df[
+        (df['Продажа с ЗЦ сумма'] >= min_sale) &
+        (df['Продажа с ЗЦ сумма'] <= max_sale)
+    ]
+    low_df = df[
+        df['Списания %'].between(min_lw, max_lw) &
+        df['Закрытие потребности %'].between(min_lf, max_lf)
+    ].sort_values('combined_score', ascending=False)
+    high_df = df[
+        (df['Списания %'] >= thr_hw) &
+        (df['Закрытие потребности %'] >= thr_hf)
+    ].sort_values('combined_score', ascending=False)
+
+    # — Вывод таблиц аномалий
+    display_anomaly_table(low_df,  "Низкие списания + низкое закрытие")
+    display_anomaly_table(high_df, "Высокие списания + высокое закрытие")
+
+    # — Точечный график
+    mask = df.index.isin(pd.concat([low_df, high_df]).index)
+    df_plot = df.copy()
+    df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
+    fig = px.scatter(
+        df_plot,
+        x='Списания %', y='Закрытие потребности %',
+        color='Статус', size='Продажа с ЗЦ сумма',
+        opacity=0.6, hover_data=['Name_tov','Группа'],
+        color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'}
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # — Скачивание результата
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as w:
-        low_df.to_excel(w, sheet_name='Низкие', index=False)
-        high_df.to_excel(w, sheet_name='Высокие', index=False)
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        low_df.to_excel(writer, sheet_name='Низкие', index=False)
+        high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
     st.download_button(
-        "Скачать в Excel", buf, "anomalies.xlsx",
+        "Скачать в Excel",
+        buf,
+        "anomalies.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
