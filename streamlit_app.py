@@ -29,19 +29,13 @@ def load_and_prepare(uploaded):
         else:
             raise KeyError("Не найдена колонка 'Группа' или 'group_name'")
 
-    # 2) Автоопределяем колонки
-    waste_col = next((c for c in df.columns
-                      if "срок" in c.lower() and "качество" in c.lower()), None)
-    fill_col  = next((c for c in df.columns
-                      if "закрытие" in c.lower()), None)
-    sale_col  = next((c for c in df.columns
-                      if "продажа" in c.lower()), None)
+    # 2) Автоопределяем остальные нужные колонки
+    waste_col = next((c for c in df.columns if "срок" in c.lower() and "качество" in c.lower()), None)
+    fill_col  = next((c for c in df.columns if "закрытие" in c.lower()), None)
+    sale_col  = next((c for c in df.columns if "продажа" in c.lower()), None)
     if not (waste_col and fill_col and sale_col):
         raise KeyError(
-            f"Не найдены требуемые колонки:\n"
-            f"  списания ({waste_col}),\n"
-            f"  закрытие ({fill_col}),\n"
-            f"  продажи ({sale_col})"
+            f"Не найдены требуемые колонки: списания({waste_col}), закрытие({fill_col}), продажи({sale_col})"
         )
 
     # 3) Парсим проценты и суммы
@@ -58,30 +52,25 @@ def load_and_prepare(uploaded):
     ).fillna(0)
 
     # 4) Очищаем
-    df = df.dropna(subset=[
-        'Категория', 'Группа', 'Name_tov',
-        'Списания %', 'Закрытие потребности %'
-    ])
+    df = df.dropna(subset=['Категория', 'Группа', 'Name_tov', 'Списания %', 'Закрытие потребности %'])
 
-    # 5) Агрегируем по SKU
+    # 5) Агрегируем по SKU (категория–группа–товар)
     def agg_group(g):
         tot = g['Продажа с ЗЦ сумма'].sum()
-        waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
-                 if tot > 0 else g['Списания %'].mean())
-        fill  = (np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма'])
-                 if tot > 0 else g['Закрытие потребности %'].mean())
+        waste = np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма']) if tot > 0 else g['Списания %'].mean()
+        fill  = np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма']) if tot > 0 else g['Закрытие потребности %'].mean()
         return pd.Series({
-            'Списания %':             waste,
+            'Списания %': waste,
             'Закрытие потребности %': fill,
-            'Продажа с ЗЦ сумма':     tot
+            'Продажа с ЗЦ сумма': tot
         })
     df = df.groupby(['Категория', 'Группа', 'Name_tov'], as_index=False).apply(agg_group)
 
     # 6) Внутригрупповые метрики
     df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
     weighted = df.groupby('Группа').apply(
-        lambda g: (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
-                   if g['Продажа с ЗЦ сумма'].sum() > 0 else g['Списания %'].mean())
+        lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
+                  if g['Продажа с ЗЦ сумма'].sum() > 0 else g['Списания %'].mean()
     ).to_dict()
     df['group_weighted_mean_waste'] = df['Группа'].map(weighted)
 
@@ -93,10 +82,7 @@ def score_anomalies(df):
     df['anomaly_score'] = 0.0
     for grp, sub in df.groupby('Группа'):
         X = sub[['Списания %', 'Закрытие потребности %']]
-        iso = IsolationForest(
-            contamination=0.05, random_state=42,
-            n_jobs=-1, n_estimators=50
-        )
+        iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
         iso.fit(X)
         raw = iso.decision_function(X)
         df.loc[sub.index, 'anomaly_score'] = -raw
@@ -117,26 +103,26 @@ def display_anomaly_table(df, title):
         'anomaly_severity','combined_score'
     ]
     rename_map = {
-        'group_mean_waste':          'Среднее в группе %',
+        'group_mean_waste': 'Среднее в группе %',
         'group_weighted_mean_waste': 'Средневзв. в группе %',
-        'anomaly_severity':          'Степень аномалии',
-        'combined_score':            'Скор в группе'
+        'anomaly_severity': 'Степень аномалии',
+        'combined_score': 'Скор в группе'
     }
     styler = (
         df[cols]
           .rename(columns=rename_map)
           .style.format({
-              'Списания %':             '{:.1f}',
-              'Среднее в группе %':     '{:.1f}',
-              'Средневзв. в группе %':  '{:.1f}',
+              'Списания %': '{:.1f}',
+              'Среднее в группе %': '{:.1f}',
+              'Средневзв. в группе %': '{:.1f}',
               'Закрытие потребности %': '{:.1f}',
-              'Продажа с ЗЦ сумма':     '{:.0f}',
-              'Степень аномалии':       '{:.3f}',
-              'Скор в группе':          '{:.3f}'
+              'Продажа с ЗЦ сумма': '{:.0f}',
+              'Степень аномалии': '{:.3f}',
+              'Скор в группе': '{:.3f}'
           })
-          .background_gradient(subset=['Списания %'],            cmap='Reds')
-          .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
-          .background_gradient(subset=['Скор в группе'],        cmap='Purples')
+          .background_gradient(subset=['Списания %'], cmap='Reds')
+          .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
+          .background_gradient(subset=['Скор в группе'], cmap='Purples')
     )
     st.dataframe(styler, use_container_width=True)
 
@@ -163,8 +149,28 @@ def main():
     sel_grps = st.sidebar.multiselect("Группы", grps_f, default=grps_f)
     df = df[df['Группа'].isin(sel_grps)]
 
+    # Если пусто после фильтrov, предупреждаем и выходим
+    if df.empty:
+        st.warning("Нет данных после фильтрации — скорректируйте фильтры")
+        return
+
+    # — Диапазон выручки
+    min_sale = int(df['Продажа с ЗЦ сумма'].min())
+    max_sale = int(df['Продажа с ЗЦ сумма'].max())
+    default_range = (min_sale, max_sale)
+    sr = st.sidebar.slider(
+        "Выручка (₽)",
+        min_value=min_sale,
+        max_value=max_sale,
+        value=default_range,
+        step=1
+    )
+    min_sale = st.sidebar.number_input("Мин. выручка", min_sale, max_sale, value=sr[0])
+    max_sale = st.sidebar.number_input("Макс. выручка", min_sale, max_sale, value=sr[1])
+
     # — Пресеты чувствительности
-    sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
+    
+    sale_min, sale_max = min_sale, max_sale
     preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
     if preset == "Слабая":
         sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,15),(5,85),15,60)
@@ -174,11 +180,6 @@ def main():
         sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min,sale_max),(0.5,5),(20,60),25,90)
 
     # — Фильтры через слайдеры и number_input
-    st.sidebar.header("Выручка")
-    sr = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def, step=1)
-    min_sale = st.sidebar.number_input("Мин. выручка", sale_min, sale_max, value=sr[0])
-    max_sale = st.sidebar.number_input("Макс. выручка", sale_min, sale_max, value=sr[1])
-
     st.sidebar.header("Низкие списания + закрытие")
     lw = st.sidebar.slider("Списания % диапазон",0.0,100.0,lw_def,step=0.1)
     min_lw = st.sidebar.number_input("Мин. списания %",0.0,100.0,value=lw[0])
@@ -191,24 +192,17 @@ def main():
     hw = st.sidebar.slider("Порог списания %",0.0,200.0,hw_def,step=0.1)
     thr_hw = st.sidebar.number_input("Порог списания % вручную",0.0,200.0,value=hw)
     hf = st.sidebar.slider("Порог закрытия %",0.0,200.0,hf_def,step=0.1)
-    thr_hf= st.sidebar.number_input("Порог закрытия % вручную",0.0,200.0,value=hf)
+    thr_hf = st.sidebar.number_input("Порог закрытия % вручную",0.0,200.0,value=hf)
 
-    # — Отбор по всем фильтрам
-    df = df[
-        (df['Продажа с ЗЦ сумма'] >= min_sale) &
-        (df['Продажа с ЗЦ сумма'] <= max_sale)
-    ]
-    low_df = df[
-        df['Списания %'].between(min_lw, max_lw) &
-        df['Закрытие потребности %'].between(min_lf, max_lf)
-    ].sort_values('combined_score', ascending=False)
-    high_df = df[
-        (df['Списания %'] >= thr_hw) &
-        (df['Закрытие потребности %'] >= thr_hf)
-    ].sort_values('combined_score', ascending=False)
+    # — Отбор и сортировка
+    df = df[(df['Продажа с ЗЦ сумма'] >= min_sale) & (df['Продажа с ЗЦ сумма'] <= max_sale)]
+    low_df = df[df['Списания %'].between(min_lw, max_lw) & df['Закрытие потребности %'].between(min_lf, max_lf)]
+    low_df = low_df.sort_values('combined_score', ascending=False)
+    high_df = df[(df['Списания %'] >= thr_hw) & (df['Закрытие потребности %'] >= thr_hf)]
+    high_df = high_df.sort_values('combined_score', ascending=False)
 
-    # — Вывод таблиц аномалий
-    display_anomaly_table(low_df,  "Низкие списания + низкое закрытие")
+    # — Вывод таблиц
+    display_anomaly_table(low_df, "Низкие списания + низкое закрытие")
     display_anomaly_table(high_df, "Высокие списания + высокое закрытие")
 
     # — Точечный график
@@ -224,7 +218,7 @@ def main():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # — Скачивание результата
+    # — Скачивание
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
