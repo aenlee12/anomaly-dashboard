@@ -15,44 +15,49 @@ def load_and_prepare(uploaded):
         df = pd.read_excel(uploaded, engine="openpyxl")
     else:
         df = pd.read_csv(uploaded)
+    # 2) Обрезаем пробелы в названиях колонок
     df.columns = df.columns.str.strip()
 
-    # 2) Выбираем и парсим колонку списаний (%)
-    if 'ЗЦ2_срок_качество_%' in df.columns:
-        waste_col = 'ЗЦ2_срок_качество_%'
-    elif 'ЗЦ2_срок_качество_4_дня' in df.columns:
-        waste_col = 'ЗЦ2_срок_качество_4_дня'
-    else:
-        waste_col = 'ЗЦ2'
-    series = df[waste_col].astype(str).str.replace(',', '.').str.rstrip('%')
-    df['Списания %'] = pd.to_numeric(series, errors='coerce')
+    # 3) Переименование колонок под наш конвейер
+    df = df.rename(columns={
+        'parent_group_name': 'Категория',
+        'group_name':        'Группа',
+        'id_tov':            'ID_TOV',
+        'Закрытие_потребности':      'Закрытие потребности %',
+        'ЗЦ2_срок_качество_4_дня':   'Списания %'
+    })
 
-    # 3) Парсим колонку закрытия потребности (%)
-    if 'Закрытие потребности_%' in df.columns:
-        fill_col = 'Закрытие потребности_%'
-    else:
-        fill_col = 'Закрытие_потребности'
-    series = df[fill_col].astype(str).str.replace(',', '.').str.rstrip('%')
-    df['Закрытие потребности %'] = pd.to_numeric(series, errors='coerce')
+    # 4) Приводим % списаний к числу
+    df['Списания %'] = pd.to_numeric(
+        df['Списания %'].astype(str).str.replace(',', '.').str.rstrip('%'),
+        errors='coerce'
+    )
+    # 5) Приводим % закрытия к числу
+    df['Закрытие потребности %'] = pd.to_numeric(
+        df['Закрытие потребности %'].astype(str).str.replace(',', '.').str.rstrip('%'),
+        errors='coerce'
+    )
+    # 6) Сумма продаж с ЗЦ
+    df['Продажа с ЗЦ сумма'] = pd.to_numeric(
+        df['Продажа_с_ЗЦ_сумма'], errors='coerce'
+    ).fillna(0)
 
-    # 4) Парсим сумму продаж с ЗЦ
-    sale_col = 'Продажа_с_ЗЦ_сумма'
-    df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
+    # 7) Очищаем
+    df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
 
-    # 5) Очищаем и группируем по SKU
-    df = df.dropna(subset=['Списания %','Закрытие потребности %','Группа','Name_tov'])
+    # 8) Агрегация по SKU (копии за разные даты/склады объединяем по средневзв.)
     def agg_group(g):
         tot = g['Продажа с ЗЦ сумма'].sum()
         waste = np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Списания %'].mean()
         fill  = np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Закрытие потребности %'].mean()
         return pd.Series({
-            'Списания %': waste,
-            'Закрытие потребности %': fill,
-            'Продажа с ЗЦ сумма': tot
+            'Списания %':              waste,
+            'Закрытие потребности %':  fill,
+            'Продажа с ЗЦ сумма':      tot
         })
     df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
 
-    # 6) Внутригрупповые метрики списаний
+    # 9) Внутригрупповые метрики списаний
     df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
     weighted = df.groupby('Группа').apply(
         lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
@@ -66,7 +71,6 @@ def load_and_prepare(uploaded):
 def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
-    # считаем IsolationForest внутри каждой группы
     for grp, sub in df.groupby('Группа'):
         X = sub[['Списания %','Закрытие потребности %']]
         iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
@@ -117,7 +121,6 @@ def display_anomaly_table(df, title):
 def main():
     st.title("Анализ аномалий: списания и закрытие потребности")
 
-    # разрешаем загрузить и CSV, и Excel
     uploaded = st.file_uploader("Загрузите файл (CSV или Excel)")
     if not uploaded:
         return
@@ -141,27 +144,22 @@ def main():
 
     # Пресеты чувствительности
     sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
-    preset = st.sidebar.radio("Пресет чувствительности", [
-        "Нет (ручная настройка)",
-        "Слабая",
-        "Средняя",
-        "Высокая"
-    ])
-    if preset == "Слабая":
+    preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
+    if preset=="Слабая":
         sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min, sale_max),(0.5,15),(5,85),15,60)
-    elif preset == "Средняя":
+    elif preset=="Средняя":
         sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min, sale_max),(0.5,8),(10,75),20,80)
     else:
         sale_def, lw_def, lf_def, hw_def, hf_def = ((sale_min, sale_max),(0.5,5),(20,60),25,90)
 
     # Фильтры по выручке и порогам
     st.sidebar.header("Фильтры по выручке")
-    sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
-    min_sale = st.sidebar.number_input("Мин. выручка", sale_min, sale_max, sale_range[0])
-    max_sale = st.sidebar.number_input("Макс. выручка", sale_min, sale_max, sale_range[1])
+    sr = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
+    min_sale = st.sidebar.number_input("Мин. выручка", sale_min, sale_max, sr[0])
+    max_sale = st.sidebar.number_input("Макс. выручка", sale_min, sale_max, sr[1])
 
     st.sidebar.header("Низкие списания + низкое закрытие")
-    lw = st.sidebar.slider("Списания % диапазон", 0.0,100.0,lw_def)
+    lw = st.sidebar.slider("Списания % диапазон",0.0,100.0,lw_def)
     min_lw = st.sidebar.number_input("Мин. списания %",0.0,100.0,lw[0])
     max_lw = st.sidebar.number_input("Макс. списания %",0.0,100.0,lw[1])
     lf = st.sidebar.slider("Закрытие % диапазон",0.0,100.0,lf_def)
@@ -170,38 +168,34 @@ def main():
 
     st.sidebar.header("Высокие списания + высокое закрытие")
     hw = st.sidebar.slider("Порог списания %",0.0,200.0,hw_def)
-    thr_hw = st.sidebar.number_input("Порог списания % вручную",0.0,200.0,hw)
+    thr_hw= st.sidebar.number_input("Порог списания % вручную",0.0,200.0,hw)
     hf = st.sidebar.slider("Порог закрытия %",0.0,200.0,hf_def)
-    thr_hf = st.sidebar.number_input("Порог закрытия % вручную",0.0,200.0,hf)
+    thr_hf= st.sidebar.number_input("Порог закрытия % вручную",0.0,200.0,hf)
 
-    # Применяем фильтры
     df = df[(df['Продажа с ЗЦ сумма']>=min_sale)&(df['Продажа с ЗЦ сумма']<=max_sale)]
     low_df = df[(df['Списания %'].between(min_lw,max_lw))&(df['Закрытие потребности %'].between(min_lf,max_lf))]\
-             .sort_values('combined_score', ascending=False)
+             .sort_values('combined_score',ascending=False)
     high_df= df[(df['Списания %']>=thr_hw)&(df['Закрытие потребности %']>=thr_hf)]\
-             .sort_values('combined_score', ascending=False)
+             .sort_values('combined_score',ascending=False)
 
     display_anomaly_table(low_df,  "Низкие списания + низкое закрытие")
     display_anomaly_table(high_df, "Высокие списания + высокое закрытие")
 
-    # График норм vs аномалии
-    mask = df.index.isin(pd.concat([low_df, high_df]).index)
-    df_plot = df.copy(); df_plot['Статус'] = np.where(mask,'Аномалия','Норма')
-    fig = px.scatter(df_plot, x='Списания %', y='Закрытие потребности %',
-                     color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
+    mask = df.index.isin(pd.concat([low_df,high_df]).index)
+    df_plot = df.copy(); df_plot['Статус']=np.where(mask,'Аномалия','Норма')
+    fig = px.scatter(df_plot,x='Списания %',y='Закрытие потребности %',
+                     color='Статус',size='Продажа с ЗЦ сумма',opacity=0.6,
                      hover_data=['Name_tov','Группа'],
                      color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'})
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig,use_container_width=True)
 
-    # Экспорт
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as w:
-        low_df .to_excel(w, sheet_name='Низкие', index=False)
-        high_df.to_excel(w, sheet_name='Высокие', index=False)
+    buf=BytesIO()
+    with pd.ExcelWriter(buf,engine='openpyxl') as w:
+        low_df .to_excel(w,sheet_name='Низкие', index=False)
+        high_df.to_excel(w,sheet_name='Высокие',index=False)
     buf.seek(0)
-    st.download_button("Скачать в Excel", buf,
-                       "anomalies.xlsx",
+    st.download_button("Скачать в Excel",buf,"anomalies.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
