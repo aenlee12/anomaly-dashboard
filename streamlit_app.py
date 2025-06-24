@@ -107,10 +107,7 @@ def display_anomaly_table(df, title):
 def main():
     st.title("Анализ аномалий: списания и закрытие потребности")
 
-    uploaded = st.file_uploader(
-        "Загрузите файл с периодами (CSV или Excel)",
-        type=["csv","xls","xlsx"]
-    )
+    uploaded = st.file_uploader
     if not uploaded:
         return
 
