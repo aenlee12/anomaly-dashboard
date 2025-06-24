@@ -17,6 +17,15 @@ def load_and_prepare(uploaded):
         df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
     
+    # Переименуем английские колонки в ожидаемые русские
+    rename_map = {}
+    if 'parent_group_name' in df.columns:
+        rename_map['parent_group_name'] = 'Категория'
+    if 'group_name' in df.columns:
+        rename_map['group_name'] = 'Группа'
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
     # 2) Автоопределяем колонки
     # списания: ищем «срок» и «качество»
     waste_col = next((c for c in df.columns
@@ -28,8 +37,9 @@ def load_and_prepare(uploaded):
     sale_col  = next((c for c in df.columns
                       if "продажа" in c.lower()), None)
     if not (waste_col and fill_col and sale_col):
-        raise KeyError(f"Не найдены требуемые колонки: списания({waste_col}), закрытие({fill_col}), продажи({sale_col})")
-    
+        raise KeyError(f"Не найдены требуемые колонки: "
+                       f"списания({waste_col}), закрытие({fill_col}), продажи({sale_col})")
+
     # 3) Парсим проценты и суммы
     df['Списания %'] = pd.to_numeric(
         df[waste_col].astype(str).str.replace(',', '.').str.rstrip('%'),
@@ -42,30 +52,32 @@ def load_and_prepare(uploaded):
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(
         df[sale_col], errors='coerce'
     ).fillna(0)
-    
+
     # 4) Очищаем
     df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
-    
+
     # 5) Агрегируем по SKU (категория–группа–товар)
     def agg_group(g):
         tot = g['Продажа с ЗЦ сумма'].sum()
-        waste = np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Списания %'].mean()
-        fill  = np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Закрытие потребности %'].mean()
+        waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
+                 if tot>0 else g['Списания %'].mean())
+        fill  = (np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма'])
+                 if tot>0 else g['Закрытие потребности %'].mean())
         return pd.Series({
             'Списания %':              waste,
             'Закрытие потребности %':  fill,
             'Продажа с ЗЦ сумма':      tot
         })
     df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
-    
+
     # 6) Внутригрупповые метрики
     df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
     weighted = df.groupby('Группа').apply(
-        lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
-                  if g['Продажа с ЗЦ сумма'].sum()>0 else g['Списания %'].mean()
+        lambda g: (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
+                   if g['Продажа с ЗЦ сумма'].sum()>0 else g['Списания %'].mean())
     ).to_dict()
     df['group_weighted_mean_waste'] = df['Группа'].map(weighted)
-    
+
     return df
 
 @st.cache_data
@@ -74,7 +86,8 @@ def score_anomalies(df):
     df['anomaly_score'] = 0.0
     for grp, sub in df.groupby('Группа'):
         X = sub[['Списания %','Закрытие потребности %']]
-        iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
+        iso = IsolationForest(contamination=0.05, random_state=42,
+                              n_jobs=-1, n_estimators=50)
         iso.fit(X)
         raw = iso.decision_function(X)
         df.loc[sub.index, 'anomaly_score'] = -raw
@@ -95,22 +108,22 @@ def display_anomaly_table(df, title):
         'anomaly_severity','combined_score'
     ]
     rename_map = {
-        'group_mean_waste':            'Среднее в группе %',
-        'group_weighted_mean_waste':   'Средневзв. в группе %',
-        'anomaly_severity':            'Степень аномалии',
-        'combined_score':              'Скор в группе'
+        'group_mean_waste':          'Среднее в группе %',
+        'group_weighted_mean_waste': 'Средневзв. в группе %',
+        'anomaly_severity':          'Степень аномалии',
+        'combined_score':            'Скор в группе'
     }
     styler = (
         df[cols]
           .rename(columns=rename_map)
           .style.format({
-              'Списания %':                     '{:.1f}',
-              'Среднее в группе %':             '{:.1f}',
-              'Средневзв. в группе %':          '{:.1f}',
-              'Закрытие потребности %':         '{:.1f}',
-              'Продажа с ЗЦ сумма':             '{:.0f}',
-              'Степень аномалии':               '{:.3f}',
-              'Скор в группе':                  '{:.3f}'
+              'Списания %':             '{:.1f}',
+              'Среднее в группе %':     '{:.1f}',
+              'Средневзв. в группе %':  '{:.1f}',
+              'Закрытие потребности %': '{:.1f}',
+              'Продажа с ЗЦ сумма':     '{:.0f}',
+              'Степень аномалии':       '{:.3f}',
+              'Скор в группе':          '{:.3f}'
           })
           .background_gradient(subset=['Списания %'],            cmap='Reds')
           .background_gradient(subset=['Закрытие потребности %'],cmap='Blues')
@@ -184,19 +197,21 @@ def main():
 
     mask = df.index.isin(pd.concat([low_df,high_df]).index)
     df_plot = df.copy(); df_plot['Статус']=np.where(mask,'Аномалия','Норма')
-    fig = px.scatter(df_plot,x='Списания %',y='Закрытие потребности %',
-                     color='Статус',size='Продажа с ЗЦ сумма',opacity=0.6,
+    fig = px.scatter(df_plot, x='Списания %', y='Закрытие потребности %',
+                     color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
                      hover_data=['Name_tov','Группа'],
                      color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'})
-    st.plotly_chart(fig,use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
     buf = BytesIO()
-    with pd.ExcelWriter(buf,engine='openpyxl') as w:
-        low_df.to_excel(w,sheet_name='Низкие',index=False)
-        high_df.to_excel(w,sheet_name='Высокие',index=False)
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        low_df.to_excel(w, sheet_name='Низкие', index=False)
+        high_df.to_excel(w, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button("Скачать в Excel",buf,"anomalies.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "Скачать в Excel", buf, "anomalies.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
