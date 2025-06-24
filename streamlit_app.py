@@ -169,6 +169,7 @@ def main():
     max_sale = st.sidebar.number_input("Макс. выручка", min_sale, max_sale, value=sr[1])
 
         # — Пресеты чувствительности
+        # — Пресеты чувствительности
     preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
     if preset == "Нет":
         lw_def = (0.0, 100.0)
@@ -193,6 +194,68 @@ def main():
 
     # — Фильтры через слайдеры и number_input
     st.sidebar.header("Низкие списания + закрытие")
+    lw = st.sidebar.slider(
+        "Списания % диапазон", 0.0, 100.0, lw_def, step=0.1
+    )
+    min_lw, max_lw = lw
+    st.sidebar.header("Закрытие потребности % диапазон")
+    lf = st.sidebar.slider(
+        "Закрытие % диапазон", 0.0, 100.0, lf_def, step=0.1
+    )
+    min_lf, max_lf = lf
+
+    st.sidebar.header("Высокие списания + закрытие")
+    thr_hw = st.sidebar.slider(
+        "Порог списания %", 0.0, 200.0, thr_hw_def, step=0.1
+    )
+    thr_hf = st.sidebar.slider(
+        "Порог закрытия %", 0.0, 200.0, thr_hf_def, step=0.1
+    )
+
+    # — Отбор и сортировка
+    df = df[(df['Продажа с ЗЦ сумма'] >= min_sale) & (df['Продажа с ЗЦ сумма'] <= max_sale)]
+    low_df = df[
+        df['Списания %'].between(min_lw, max_lw) &
+        df['Закрытие потребности %'].between(min_lf, max_lf)
+    ].sort_values('combined_score', ascending=False)
+    high_df = df[
+        (df['Списания %'] >= thr_hw) &
+        (df['Закрытие потребности %'] >= thr_hf)
+    ].sort_values('combined_score', ascending=False)
+
+    # — Вывод таблиц
+    display_anomaly_table(low_df, "Низкие списания + низкое закрытие")
+    display_anomaly_table(high_df, "Высокие списания + высокое закрытие")
+
+    # — Точечный график
+    mask = df.index.isin(pd.concat([low_df, high_df]).index)
+    df_plot = df.copy()
+    df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
+    fig = px.scatter(
+        df_plot,
+        x='Списания %', y='Закрытие потребности %',
+        color='Статус', size='Продажа с ЗЦ сумма',
+        opacity=0.6, hover_data=['Name_tov','Группа'],
+        color_discrete_map={'Норма':'lightgrey','Аномалия':'crimson'}
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # — Скачивание
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        low_df.to_excel(writer, sheet_name='Низкие', index=False)
+        high_df.to_excel(writer, sheet_name='Высокие', index=False)
+    buf.seek(0)
+    st.download_button(
+        "Скачать в Excel",
+        buf,
+        "anomalies.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+if __name__ == "__main__":
+    main()
+ + закрытие")
     lw = st.sidebar.slider(
         "Списания % диапазон", 0.0, 100.0, lw_def, step=0.1
     )
