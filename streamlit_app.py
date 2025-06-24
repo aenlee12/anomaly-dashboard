@@ -47,11 +47,15 @@ def load_and_prepare(uploaded):
         raise KeyError("Не найдена колонка с суммой продаж")
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
 
-    # 5) Считаем % закрытия
+    # 5) Считаем % закрытия и переводим в проценты 0-100
     fill_col = next(c for c in df.columns if 'закрытие' in c.lower())
-    df['Закрытие потребности %'] = pd.to_numeric(
-        df[fill_col].astype(str).str.replace(',', '.').str.rstrip('%'),
-        errors='coerce'
+    df['Закрытие потребности %'] = (
+        pd.to_numeric(
+            df[fill_col].astype(str)
+                  .str.replace(',', '.')
+                  .str.rstrip('%'),
+            errors='coerce'
+        ) * 100
     )
 
     # 6) Считаем «Списания %» по формуле (ZC2 + срок + качество) / Продажа_с_ЗЦ_сумма * 100
@@ -197,57 +201,4 @@ def main():
     preset = sb.radio("Пресет", ["Нет","Слабая","Средняя","Высокая"])
     defs = {
         "Слабая":  ((0.5,15.0), (5.0,85.0), 15.0, 60.0),
-        "Средняя": ((0.5,8.0),  (10.0,75.0), 20.0, 80.0),
-        "Высокая": ((0.5,5.0),  (20.0,60.0), 25.0, 90.0),
-        "Нет":     ((0.0,100.0),(0.0,100.0),0.0,  0.0)
-    }
-    lw_def, lf_def, hw_def, hf_def = defs[preset]
-
-    sb.subheader("Низкие списания + низкое закрытие")
-    low_rng = sb.slider("Списания % (диапазон)", 0.0, 100.0, lw_def, step=0.1)
-    lw_min = sb.number_input("Мин. списания %", 0.0, 100.0, value=low_rng[0], step=0.1)
-    lw_max = sb.number_input("Макс. списания %", 0.0, 100.0, value=low_rng[1], step=0.1)
-
-    close_rng = sb.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def, step=0.1)
-    lf_min = sb.number_input("Мин. закрытие %", 0.0, 100.0, value=close_rng[0], step=0.1)
-    lf_max = sb.number_input("Макс. закрытие %", 0.0, 100.0, value=close_rng[1], step=0.1)
-
-    sb.subheader("Высокие списания + высокое закрытие")
-    hw_thr = sb.number_input("Порог списания %", 0.0, 200.0, value=hw_def, step=0.1)
-    hf_thr = sb.number_input("Порог закрытия %", 0.0, 200.0, value=hf_def, step=0.1)
-
-    low_df  = df[df['Списания %'].between(lw_min, lw_max) &
-                 df['Закрытие потребности %'].between(lf_min, lf_max)]
-    high_df = df[(df['Списания %'] >= hw_thr) &
-                 (df['Закрытие потребности %'] >= hf_thr)]
-
-    display_anomaly_table(low_df.sort_values('combined_score', ascending=False),
-                          "Низкие списания + низкое закрытие")
-    display_anomaly_table(high_df.sort_values('combined_score', ascending=False),
-                          "Высокие списания + высокое закрытие")
-
-    # График
-    mask = df.index.isin(pd.concat([low_df, high_df]).index)
-    df_plot = df.copy()
-    df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
-    fig = px.scatter(df_plot,
-                     x='Списания %', y='Закрытие потребности %',
-                     color='Статус', size='Продажа с ЗЦ сумма',
-                     opacity=0.6,
-                     hover_data=['Name_tov','Группа','Формат','Склад'],
-                     color_discrete_map={'Норма':'lightgray','Аномалия':'crimson'}
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Экспорт
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_df.to_excel(writer, sheet_name='Низкие',  index=False)
-        high_df.to_excel(writer, sheet_name='Высокие', index=False)
-    buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-if __name__ == "__main__":
-    main()
+        "Средняя": ((0.5,8.0),  (10.0,75.0), 20.0, 80.0),\``
