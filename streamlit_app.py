@@ -8,9 +8,15 @@ import plotly.express as px
 st.set_page_config(page_title="Аномалии: списания & закрытие", layout="wide")
 
 @st.cache_data
-def load_and_prepare(path):
-    df = pd.read_csv(path)
+def load_and_prepare(uploaded):
+    # Поддержка CSV и Excel
+    name = uploaded.name.lower()
+    if name.endswith((".xls", ".xlsx")):
+        df = pd.read_excel(uploaded, engine="openpyxl")
+    else:
+        df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
+
     df['Списания %'] = pd.to_numeric(
         df['ЗЦ2_срок_качество_%'].str.replace(',', '.').str.rstrip('%'),
         errors='coerce'
@@ -23,26 +29,28 @@ def load_and_prepare(path):
         df['Продажа_с_ЗЦ_сумма'], errors='coerce'
     ).fillna(0)
     df = df.dropna(subset=['Списания %','Закрытие потребности %','Группа','Name_tov'])
-    # Агрегация по позиции
+
+    # Агрегация по SKU
     def agg_group(g):
-        total_sales = g['Продажа с ЗЦ сумма'].sum()
-        waste = (np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
-                 if total_sales > 0 else g['Списания %'].mean())
-        fill  = (np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма'])
-                 if total_sales > 0 else g['Закрытие потребности %'].mean())
+        total = g['Продажа с ЗЦ сумма'].sum()
+        waste = np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма']) if total>0 else g['Списания %'].mean()
+        fill  = np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма']) if total>0 else g['Закрытие потребности %'].mean()
         return pd.Series({
             'Списания %': waste,
             'Закрытие потребности %': fill,
-            'Продажа с ЗЦ сумма': total_sales
+            'Продажа с ЗЦ сумма': total
         })
+
     df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
+
     # Среднее и средневзвешенное списание в группе
     df['group_mean_waste'] = df.groupby('Группа')['Списания %'].transform('mean')
     weighted = df.groupby('Группа').apply(
         lambda g: np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма'])
-        if g['Продажа с ЗЦ сумма'].sum() > 0 else g['Списания %'].mean()
+        if g['Продажа с ЗЦ сумма'].sum()>0 else g['Списания %'].mean()
     ).to_dict()
     df['group_weighted_mean_waste'] = df['Группа'].map(weighted)
+
     return df
 
 @st.cache_data
@@ -55,6 +63,7 @@ def score_anomalies(df):
         iso.fit(X)
         raw = iso.decision_function(X)
         df.loc[sub.index, 'anomaly_score'] = -raw
+
     df['anomaly_severity'] = df['anomaly_score'].abs()
     df['sales_share_in_group'] = (
         df['Продажа с ЗЦ сумма'] /
@@ -72,10 +81,10 @@ def display_anomaly_table(df, title):
         'anomaly_severity','combined_score'
     ]
     rename_map = {
-        'group_mean_waste':            'Среднее списание в группе %',
-        'group_weighted_mean_waste':   'Средневзв. списание в группе %',
-        'anomaly_severity':            'Степень аномалии',
-        'combined_score':              'Скор в группе'
+        'group_mean_waste':          'Среднее списание в группе %',
+        'group_weighted_mean_waste': 'Средневзв. списание в группе %',
+        'anomaly_severity':          'Степень аномалии',
+        'combined_score':            'Скор в группе'
     }
     styler = (
         df[cols]
@@ -97,7 +106,11 @@ def display_anomaly_table(df, title):
 
 def main():
     st.title("Анализ аномалий: списания и закрытие потребности")
-    uploaded = st.file_uploader("Загрузите CSV-файл с периодами", type="csv")
+
+    uploaded = st.file_uploader(
+        "Загрузите файл с периодами (CSV или Excel)",
+        type=["csv","xls","xlsx"]
+    )
     if not uploaded:
         return
 
@@ -134,30 +147,32 @@ def main():
         sale_def, lw_def, lf_def, hw_def, hf_def = (
             (sale_min, sale_max), (0.5,8.0), (10.0,75.0), 20.0, 80.0
         )
-    else:  # Высокая или Нет
+    else:  # Высокая чувствительность или Нет
         sale_def, lw_def, lf_def, hw_def, hf_def = (
             (sale_min, sale_max), (0.5,5.0), (20.0,60.0), 25.0, 90.0
         )
 
-    # Фильтры: ползунки + ручной ввод
+    # Фильтры: выручка
     st.sidebar.header("Фильтры по выручке")
     sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
-    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, sale_range[0])
-    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, sale_range[1])
+    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_range[0])
+    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, value=sale_range[1])
 
+    # Низкие списания + низкое закрытие
     st.sidebar.header("Низкие списания + низкое закрытие")
     lw_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, lw_def)
-    lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, lw_slider[0])
-    lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, lw_slider[1])
+    lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, value=lw_slider[0])
+    lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, value=lw_slider[1])
     lf_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def)
-    lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, lf_slider[0])
-    lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, lf_slider[1])
+    lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, value=lf_slider[0])
+    lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, value=lf_slider[1])
 
+    # Высокие списания + высокое закрытие
     st.sidebar.header("Высокие списания + высокое закрытие")
     hw_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, hw_def)
-    hw_thr    = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, hw_slider)
+    hw_thr    = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, value=hw_slider)
     hf_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, hf_def)
-    hf_thr    = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, hf_slider)
+    hf_thr    = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, value=hf_slider)
 
     # Применяем фильтры
     df = df[
