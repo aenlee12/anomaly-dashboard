@@ -170,28 +170,88 @@ def main():
     }
     lw_def,lf_def,hw_def,hf_def=defs[preset]
 
-    # Низкие: ручной ввод диапазона
+        # Низкие: диапазон списания и закрытия с ползунками и вводом
     sb.subheader("Низкие списания + низкое закрытие")
-    low_min=sb.number_input("Мин. списания %",0.0,100.0,value=lw_def[0],step=0.1)
-    low_max=sb.number_input("Макс. списания %",0.0,100.0,value=lw_def[1],step=0.1)
-    close_min=sb.number_input("Мин. закрытие %",0.0,100.0,value=lf_def[0],step=0.1)
-    close_max=sb.number_input("Макс. закрытие %",0.0,100.0,value=lf_def[1],step=0.1)
+    low_range = sb.slider(
+        "Списания % (диапазон)",
+        0.0, 100.0,
+        lw_def,
+        step=0.1
+    )
+    low_min = sb.number_input(
+        "Мин. списания % (число)",
+        0.0, 100.0,
+        value=low_range[0],
+        step=0.1
+    )
+    low_max = sb.number_input(
+        "Макс. списания % (число)",
+        0.0, 100.0,
+        value=low_range[1],
+        step=0.1
+    )
+    close_range = sb.slider(
+        "Закрытие % (диапазон)",
+        0.0, 100.0,
+        lf_def,
+        step=0.1
+    )
+    close_min = sb.number_input(
+        "Мин. закрытие % (число)",
+        0.0, 100.0,
+        value=close_range[0],
+        step=0.1
+    )
+    close_max = sb.number_input(
+        "Макс. закрытие % (число)",
+        0.0, 100.0,
+        value=close_range[1],
+        step=0.1
+    )
 
     # Разделитель
     sb.markdown("---")
 
-    # Высокие: слайдер для порогов
+    # Высокие: порог списаний и закрытия с ползунками и вводом
     sb.subheader("Высокие списания + высокое закрытие")
-    hw_thr=sb.slider("Порог списания %",0.0,200.0,hw_def,step=0.1)
-    hf_thr=sb.slider("Порог закрытия %",0.0,200.0,hf_def,step=0.1)
+    hw_slider = sb.slider(
+        "Порог списания %",
+        0.0, 200.0,
+        hw_def,
+        step=0.1
+    )
+    hw_thr = sb.number_input(
+        "Порог списания % (число)",
+        0.0, 200.0,
+        value=hw_slider,
+        step=0.1
+    )
+    hf_slider = sb.slider(
+        "Порог закрытия %",
+        0.0, 200.0,
+        hf_def,
+        step=0.1
+    )
+    hf_thr = sb.number_input(
+        "Порог закрытия % (число)",
+        0.0, 200.0,
+        value=hf_slider,
+        step=0.1
+    )
 
-    low_df=df[(df['Списания %'].between(low_min,low_max))&
-              (df['Закрытие потребности %'].between(close_min,close_max))]
-    high_df=df[(df['Списания %']>=hw_thr)&
-               (df['Закрытие потребности %']>=hf_thr)]
+    low_df = df[
+        (df['Списания %'].between(low_min, low_max)) &
+        (df['Закрытие потребности %'].between(close_min, close_max))
+    ]
+    high_df = df[
+        (df['Списания %'] >= hw_thr) &
+        (df['Закрытие потребности %'] >= hf_thr)
+    ]
 
-    display_anomaly_table(low_df.sort_values('combined_score',ascending=False),"Низкие списания + низкое закрытие")
-    display_anomaly_table(high_df.sort_values('combined_score',ascending=False),"Высокие списания + высокое закрытие")
+    display_anomaly_table(low_df.sort_values('combined_score', ascending=False),
+                          "Низкие списания + низкое закрытие")
+    display_anomaly_table(high_df.sort_values('combined_score', ascending=False),
+                          "Высокие списания + высокое закрытие")
 
     # График
     mask=df.index.isin(pd.concat([low_df,high_df]).index)
