@@ -10,14 +10,13 @@ st.set_page_config(page_title="Аномалии: списания & закрыт
 @st.cache_data
 def load_and_prepare(uploaded):
     name = uploaded.name.lower()
-    # 1) чтение файла
     if name.endswith((".xls", ".xlsx")):
         df = pd.read_excel(uploaded, engine="openpyxl")
     else:
         df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
 
-    # 2) переименование ключевых колонок
+    # Rename key columns
     col_map = {}
     if 'parent_group_name' in df.columns:
         col_map['parent_group_name'] = 'Категория'
@@ -26,7 +25,6 @@ def load_and_prepare(uploaded):
     fmt = next((c for c in df.columns if 'формат' in c.lower() or 'format' in c.lower()), None)
     if fmt:
         col_map[fmt] = 'Формат'
-    # Предпочитаем колонку name_sklad над id_sklad
     skl = next((c for c in df.columns if 'name_sklad' in c.lower()), None)
     if skl:
         col_map[skl] = 'Склад'
@@ -36,21 +34,21 @@ def load_and_prepare(uploaded):
             col_map[skl] = 'Склад'
     df = df.rename(columns=col_map)
 
-    # 3) проверка обязательных полей
+    # Required columns
     for req in ['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']:
         if req not in df.columns:
-            raise KeyError(f"В файле нет колонки «{req}»")
+            raise KeyError(f"Missing column '{req}' in input file")
 
-    # 4) сумма продаж
+    # Sales sum
     sale_col = next((c for c in df.columns if 'продажа' in c.lower() and 'сумма' in c.lower()), None)
     if not sale_col:
-        raise KeyError("Не найдена колонка с суммой продаж")
+        raise KeyError("Missing sales sum column")
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
 
-    # 5) % закрытия (0-100)
+    # Fill %
     fill_col = next((c for c in df.columns if 'закрытие' in c.lower()), None)
     if not fill_col:
-        raise KeyError("Не найдена колонка закрытия")
+        raise KeyError("Missing fill percentage column")
     df['Закрытие потребности %'] = (
         pd.to_numeric(
             df[fill_col].astype(str).str.replace(',', '.').str.rstrip('%'),
@@ -58,12 +56,12 @@ def load_and_prepare(uploaded):
         ) * 100
     )
 
-    # 6) % списания
-    col_zc2  = next((c for c in df.columns if c.lower().startswith('зц2')), None)
+    # Waste %
+    col_zc2 = next((c for c in df.columns if c.lower().startswith('зц2')), None)
     col_srok = next((c for c in df.columns if c.lower() == 'срок'), None)
     col_kach = next((c for c in df.columns if c.lower() == 'качество'), None)
     if not (col_zc2 and col_srok and col_kach):
-        raise KeyError("Не найдены колонки для расчёта списания (ZC2, срок, качество)")
+        raise KeyError("Missing waste columns ZC2, срок, or качество")
     for c in (col_zc2, col_srok, col_kach):
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     df['Списания %'] = np.where(
@@ -72,23 +70,23 @@ def load_and_prepare(uploaded):
         0
     )
 
-    # 7) очистка
-    df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
-    meta = df[['Категория','Группа','Name_tov','Формат','Склад']].drop_duplicates()
+    df = df.dropna(subset=['Категория', 'Группа', 'Name_tov', 'Списания %', 'Закрытие потребности %'])
+    meta = df[['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']].drop_duplicates()
 
-    # 8) агрегация по SKU
-    grp = df.groupby(['Категория','Группа','Name_tov'])
+    # Aggregate by SKU
+    grp = df.groupby(['Категория', 'Группа', 'Name_tov'])
     tot = grp['Продажа с ЗЦ сумма'].sum()
-    waste = grp.apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum()>0 else x['Списания %'].mean())
-    fill = grp.apply(lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum()>0 else x['Закрытие потребности %'].mean())
+    waste = grp.apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum() > 0 else x['Списания %'].mean())
+    fill = grp.apply(lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum() > 0 else x['Закрытие потребности %'].mean())
     agg = pd.concat([tot, waste, fill], axis=1).reset_index()
-    agg.columns = ['Категория','Группа','Name_tov','Продажа с ЗЦ сумма','Списания %','Закрытие потребности %']
+    agg.columns = ['Категория', 'Группа', 'Name_tov', 'Продажа с ЗЦ сумма', 'Списания %', 'Закрытие потребности %']
 
+    # Group metrics
     agg['group_mean_waste'] = agg.groupby('Группа')['Списания %'].transform('mean')
-    wmap = agg.groupby('Группа').apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum()>0 else x['Списания %'].mean()).to_dict()
+    wmap = agg.groupby('Группа').apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum() > 0 else x['Списания %'].mean()).to_dict()
     agg['group_weighted_mean_waste'] = agg['Группа'].map(wmap)
 
-    return agg.merge(meta, on=['Категория','Группа','Name_tov'], how='left')
+    return agg.merge(meta, on=['Категория', 'Группа', 'Name_tov'], how='left')
 
 @st.cache_data
 def score_anomalies(df):
@@ -97,7 +95,7 @@ def score_anomalies(df):
     for grp, sub in df.groupby('Группа'):
         if len(sub) < 2:
             continue
-        X = sub[['Списания %','Закрытие потребности %']]
+        X = sub[['Списания %', 'Закрытие потребности %']]
         iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=30)
         iso.fit(X)
         df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
@@ -108,18 +106,35 @@ def score_anomalies(df):
 
 def display_anomaly_table(df, title):
     st.subheader(f"{title} (найдено {len(df)})")
-    cols = ['Категория','Группа','Формат','Склад','Name_tov','Списания %','group_mean_waste','group_weighted_mean_waste','Закрытие потребности %','Продажа с ЗЦ сумма','anomaly_severity','combined_score']
-    rename = {'group_mean_waste':'Среднее в группе %','group_weighted_mean_waste':'Средневзв. в группе %','anomaly_severity':'Степень аномалии','combined_score':'Скор в группе'}
-    styler = (df[cols].rename(columns=rename)
-              .style.format({**{c:'{:.1f}' for c in ['Списания %','Среднее в группе %','Средневзв. в группе %','Закрытие потребности %']}, **{'Продажа с ЗЦ сумма':'{:.0f}','Степень аномалии':'{:.3f}','Скор в группе':'{:.3f}'})
-              .background_gradient(subset=['Списания %'], cmap='Reds')
-              .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
-              .background_gradient(subset=['Скор в группе'], cmap='Purples'))
+    cols = ['Категория', 'Группа', 'Формат', 'Склад', 'Name_tov', 'Списания %', 'group_mean_waste', 'group_weighted_mean_waste', 'Закрытие потребности %', 'Продажа с ЗЦ сумма', 'anomaly_severity', 'combined_score']
+    rename_map = {
+        'group_mean_waste': 'Среднее в группе %',
+        'group_weighted_mean_waste': 'Средневзв. в группе %',
+        'anomaly_severity': 'Степень аномалии',
+        'combined_score': 'Скор в группе'
+    }
+    styler = (
+        df[cols]
+        .rename(columns=rename_map)
+        .style
+        .format({
+            'Списания %': '{:.1f}',
+            'Среднее в группе %': '{:.1f}',
+            'Средневзв. в группе %': '{:.1f}',
+            'Закрытие потребности %': '{:.1f}',
+            'Продажа с ЗЦ сумма': '{:.0f}',
+            'Степень аномалии': '{:.3f}',
+            'Скор в группе': '{:.3f}'
+        })
+        .background_gradient(subset=['Списания %'], cmap='Reds')
+        .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
+        .background_gradient(subset=['Скор в группе'], cmap='Purples')
+    )
     st.dataframe(styler, use_container_width=True)
 
 def main():
     st.title("Аномалии: списания и закрытие потребности")
-    uploaded = st.file_uploader("Загрузите CSV/Excel", type=['csv','xls','xlsx'])
+    uploaded = st.file_uploader("Загрузите CSV/Excel", type=['csv', 'xls', 'xlsx'])
     if not uploaded:
         return
 
@@ -141,7 +156,7 @@ def main():
     whs = sorted(df['Склад'].unique())
     sel_whs = sb.multiselect("Склады", whs, default=[])
 
-    # Применяем фильтрацию
+    # Фильтрация
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
     if sel_fmts:
         df = df[df['Формат'].isin(sel_fmts)]
@@ -151,24 +166,21 @@ def main():
         st.warning("Нет данных после фильтров")
         return
 
-    # Выручка: слайдер + число
+    # Выручка: слайдер + ввод числа
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
     min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, value=sel_rng[0], step=1)
     max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, value=sel_rng[1], step=1)
     df = df[df['Продажа с ЗЦ сумма'].between(min_rev, max_rev)]
 
-    # Разделитель
     sb.markdown("---")
-
-    # Чувствительность
     sb.header("Чувствительность")
-    preset = sb.radio("Пресет", ["Нет","Слабая","Средняя","Высокая"])
+    preset = sb.radio("Пресет", ["Нет", "Слабая", "Средняя", "Высокая"])
     defs = {
-        "Нет":     ((0.0,100.0),(0.0,100.0),0.0,0.0),
-        "Слабая":  ((0.5,15.0),(5.0,85.0),15.0,60.0),
-        "Средняя": ((0.5,8.0), (10.0,75.0),20.0,80.0),
-        "Высокая": ((0.5,5.0), (20.0,60.0),25.0,90.0)
+        "Нет":     ((0.0, 100.0), (0.0, 100.0), 0.0, 0.0),
+        "Слабая":  ((0.5, 15.0),  (5.0, 85.0),  15.0, 60.0),
+        "Средняя": ((0.5, 8.0),   (10.0, 75.0), 20.0, 80.0),
+        "Высокая": ((0.5, 5.0),   (20.0, 60.0), 25.0, 90.0)
     }
     lw_def, lf_def, hw_def, hf_def = defs[preset]
 
@@ -181,9 +193,7 @@ def main():
     close_min = sb.number_input("Мин. закрытие % (число)", 0.0, 100.0, value=close_range[0], step=0.1)
     close_max = sb.number_input("Макс. закрытие % (число)", 0.0, 100.0, value=close_range[1], step=0.1)
 
-    # Разделитель
     sb.markdown("---")
-
     # Высокие списания + высокое закрытие
     sb.subheader("Высокие списания + высокое закрытие")
     hw_slider = sb.slider("Порог списания %", 0.0, 200.0, hw_def, step=0.1)
@@ -197,26 +207,26 @@ def main():
     display_anomaly_table(low_df.sort_values('combined_score', ascending=False), "Низкие списания + низкое закрытие")
     display_anomaly_table(high_df.sort_values('combined_score', ascending=False), "Высокие списания + высокое закрытие")
 
-    # График
+    # Scatter plot
     mask = df.index.isin(pd.concat([low_df, high_df]).index)
     df_plot = df.copy()
     df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
     fig = px.scatter(
-        df_plot, x='Списания %', y='Закрытие потребности %',
+        df_plot,
+        x='Списания %', y='Закрытие потребности %',
         color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
         hover_data=['Name_tov','Группа','Формат','Склад'],
         color_discrete_map={'Норма':'lightgray','Аномалия':'crimson'}
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Экспорт
+    # Export
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Скачать Excel", buf, "anomalies.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
