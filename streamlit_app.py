@@ -104,16 +104,19 @@ def main():
     df = load_and_prepare(uploaded)
     df = score_anomalies(df)
 
-    # Фильтрация по категориям и группам
+    # Фильтрация по категориям
     st.sidebar.header("Фильтрация по категориям")
     cats = sorted(df['Категория'].unique())
     sel_cats = st.sidebar.multiselect("Категории", cats, default=cats)
-    # после выбора категорий – фильтруем и обновляем список групп
     df_cat = df[df['Категория'].isin(sel_cats)]
+
+    # Поиск и фильтрация по группам
     st.sidebar.header("Фильтрация по группам")
     grps = sorted(df_cat['Группа'].unique())
-    sel_grps = st.sidebar.multiselect("Группы", grps, default=grps)
-    df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
+    grp_query = st.sidebar.text_input("Поиск групп", "")
+    grps_filtered = [g for g in grps if grp_query.lower() in g.lower()]
+    sel_grps = st.sidebar.multiselect("Группы", grps_filtered, default=grps_filtered)
+    df = df_cat[df_cat['Группа'].isin(sel_grps)]
 
     # Пресеты чувствительности
     sale_min, sale_max = df['Продажа с ЗЦ сумма'].min(), df['Продажа с ЗЦ сумма'].max()
@@ -124,49 +127,37 @@ def main():
         "Высокая чувствительность"
     ])
     if preset == "Слабая чувствительность":
-        sale_def = (sale_min, sale_max)
-        lw_def = (0.5, 15.0)
-        lf_def = (5.0, 85.0)
-        hw_def = 15.0
-        hf_def = 60.0
+        sale_def, lw_def, lf_def, hw_def, hf_def = (
+            (sale_min, sale_max), (0.5,15.0), (5.0,85.0), 15.0, 60.0
+        )
     elif preset == "Средняя чувствительность":
-        sale_def = (sale_min, sale_max)
-        lw_def = (0.5, 8.0)
-        lf_def = (10.0, 75.0)
-        hw_def = 20.0
-        hf_def = 80.0
-    elif preset == "Высокая чувствительность":
-        sale_def = (sale_min, sale_max)
-        lw_def = (0.5, 5.0)
-        lf_def = (20.0, 60.0)
-        hw_def = 25.0
-        hf_def = 90.0
-    else:
-        sale_def = (sale_min, sale_max)
-        lw_def = (0.5, 8.0)
-        lf_def = (10.0, 75.0)
-        hw_def = 20.0
-        hf_def = 80.0
+        sale_def, lw_def, lf_def, hw_def, hf_def = (
+            (sale_min, sale_max), (0.5,8.0), (10.0,75.0), 20.0, 80.0
+        )
+    else:  # Высокая или Нет
+        sale_def, lw_def, lf_def, hw_def, hf_def = (
+            (sale_min, sale_max), (0.5,5.0), (20.0,60.0), 25.0, 90.0
+        )
 
     # Фильтры: ползунки + ручной ввод
     st.sidebar.header("Фильтры по выручке")
     sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, sale_def)
-    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, value=sale_range[0])
-    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, value=sale_range[1])
+    sale_min_in = st.sidebar.number_input("Мин. выручка (₽)", sale_min, sale_max, sale_range[0])
+    sale_max_in = st.sidebar.number_input("Макс. выручка (₽)", sale_min, sale_max, sale_range[1])
 
     st.sidebar.header("Низкие списания + низкое закрытие")
     lw_slider = st.sidebar.slider("Списания % (диапазон)", 0.0, 100.0, lw_def)
-    lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, value=lw_slider[0])
-    lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, value=lw_slider[1])
+    lw_min = st.sidebar.number_input("Мин. списания %", 0.0, 100.0, lw_slider[0])
+    lw_max = st.sidebar.number_input("Макс. списания %", 0.0, 100.0, lw_slider[1])
     lf_slider = st.sidebar.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def)
-    lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, value=lf_slider[0])
-    lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, value=lf_slider[1])
+    lf_min = st.sidebar.number_input("Мин. закрытие %", 0.0, 100.0, lf_slider[0])
+    lf_max = st.sidebar.number_input("Макс. закрытие %", 0.0, 100.0, lf_slider[1])
 
     st.sidebar.header("Высокие списания + высокое закрытие")
     hw_slider = st.sidebar.slider("Порог списания %", 0.0, 200.0, hw_def)
-    hw_thr = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, value=hw_slider)
+    hw_thr    = st.sidebar.number_input("Порог списания % вручную", 0.0, 200.0, hw_slider)
     hf_slider = st.sidebar.slider("Порог закрытия %", 0.0, 200.0, hf_def)
-    hf_thr = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, value=hf_slider)
+    hf_thr    = st.sidebar.number_input("Порог закрытия % вручную", 0.0, 200.0, hf_slider)
 
     # Применяем фильтры
     df = df[
