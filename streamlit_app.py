@@ -8,80 +8,40 @@ import plotly.express as px
 st.set_page_config(page_title="Аномалии: списания & закрытие", layout="wide")
 
 @st.cache_data
-def load_and_prepare(uploaded):
-    # Загрузка файла
-    name = uploaded.name.lower()
-    if name.endswith((".xls", ".xlsx")):
-        df = pd.read_excel(uploaded, engine="openpyxl")
-    else:
-        df = pd.read_csv(uploaded)
-    df.columns = df.columns.str.strip()
-
-    # Переименование колонок
-    rename_map = {}
-    for eng, rus in [('parent_group_name','Категория'), ('group_name','Группа')]:
-        if eng in df.columns:
-            rename_map[eng] = rus
-    fmt_col = next((c for c in df.columns if 'формат' in c.lower() or 'format' in c.lower()), None)
-    if fmt_col:
-        rename_map[fmt_col] = 'Формат'
-    skl_col = next((c for c in df.columns if 'name_sklad' in c.lower()), None)
-    if not skl_col:
-        skl_col = next((c for c in df.columns if 'sklad' in c.lower()), None)
-    if skl_col:
-        rename_map[skl_col] = 'Склад'
-    df = df.rename(columns=rename_map)
-
-    # Проверка обязательных полей
-    required = ['Категория','Группа','Name_tov','Формат','Склад']
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise KeyError(f"Отсутствуют колонки: {missing}")
-
-    # Парсинг процентов и сумм
-    waste_col = next(c for c in df.columns if 'срок' in c.lower() and 'качество' in c.lower())
-    fill_col = next(c for c in df.columns if 'закрытие' in c.lower())
-    sale_col = next(c for c in df.columns if 'продажа' in c.lower())
-
-    df['Списания %'] = pd.to_numeric(df[waste_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce')
-    df['Закрытие потребности %'] = pd.to_numeric(df[fill_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce') * 100.0
-    df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
-
-    df = df.dropna(subset=['Категория','Группа','Name_tov','Списания %','Закрытие потребности %'])
-
-    # Сохраняем метаданные формат/склад
-    meta = df[['Категория','Группа','Name_tov','Формат','Склад']].drop_duplicates()
-
-    # Агрегация по SKU
-    def agg_group(g):
-        tot = g['Продажа с ЗЦ сумма'].sum()
-        waste = np.average(g['Списания %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Списания %'].mean()
-        fill = np.average(g['Закрытие потребности %'], weights=g['Продажа с ЗЦ сумма']) if tot>0 else g['Закрытие потребности %'].mean()
-        return pd.Series({'Списания %': waste, 'Закрытие потребности %': fill, 'Продажа с ЗЦ сумма': tot})
-    agg_df = df.groupby(['Категория','Группа','Name_tov'], as_index=False).apply(agg_group)
-
-    # Внутригрупповые метрики
-    agg_df['group_mean_waste'] = agg_df.groupby('Группа')['Списания %'].transform('mean')
-    wmap = agg_df.groupby('Группа').apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) if x['Продажа с ЗЦ сумма'].sum()>0 else x['Списания %'].mean()).to_dict()
-    agg_df['group_weighted_mean_waste'] = agg_df['Группа'].map(wmap)
-
-    # Объединяем формат и склад обратно
-    result = agg_df.merge(meta, on=['Категория','Группа','Name_tov'], how='left')
-    return result
-
-@st.cache_data
-def score_anomalies(df):
-    df = df.copy()
-    df['anomaly_score'] = 0.0
-    for grp, sub in df.groupby('Группа'):
-        X = sub[['Списания %','Закрытие потребности %']]
-        iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
-        iso.fit(X)
-        df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
-    df['anomaly_severity'] = df['anomaly_score'].abs()
-    df['sales_share_in_group'] = df['Продажа с ЗЦ сумма'] / df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
-    df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group'].fillna(0)
-    return df
+"
+"def score_anomalies(df):
+"
+"    df = df.copy()
+"
+"    df['anomaly_score'] = 0.0
+"
+"    # Теперь считаем аномалии в разрезе Группа+Формат+Склад
+"
+"    for (grp, fmt, wh), sub in df.groupby(['Группа','Формат','Склад']):
+"
+"        X = sub[['Списания %','Закрытие потребности %']]
+"
+"        if len(sub) < 2:
+"
+"            # недостаточно точек для модели, оставляем нули
+"
+"            continue
+"
+"        iso = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1, n_estimators=50)
+"
+"        iso.fit(X)
+"
+"        df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
+"
+"    df['anomaly_severity'] = df['anomaly_score'].abs()
+"
+"    # Доля продаж внутри составной группы
+"
+"    df['sales_share_in_group'] = df['Продажа с ЗЦ сумма'] / df.groupby(['Группа','Формат','Склад'])['Продажа с ЗЦ сумма'].transform('sum')
+"
+"    df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group'].fillna(0)
+"
+"    return df
 
 
 def display_anomaly_table(df, title):
@@ -146,23 +106,14 @@ def main():
     hw_thr = sb.number_input("Порог списания %", 0.0, 200.0, value=hw_def, step=0.1)
     hf_thr = sb.number_input("Порог закрытия %", 0.0, 200.0, value=hf_def, step=0.1)
 
-    low_df = df[df['Списания %'].between(lw_min, lw_max) & df['Закрытие потребности %'].between(lf_min, lf_max)]
-    high_df = df[(df['Списания %']>=hw_thr) & (df['Закрытие потребности %']>=hf_thr)]
-
-    display_anomaly_table(low_df.sort_values('combined_score',ascending=False),"Низкие списания + низкое закрытие")
-    display_anomaly_table(high_df.sort_values('combined_score',ascending=False),"Высокие списания + высокое закрытие")
-
-    mask = df.index.isin(pd.concat([low_df,high_df]).index)
-    df_plot = df.copy(); df_plot['Статус'] = np.where(mask,'Аномалия','Норма')
-    fig = px.scatter(df_plot, x='Списания %', y='Закрытие потребности %', color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6, hover_data=['Name_tov','Группа','Формат','Склад'], color_discrete_map={'Норма':'lightgray','Аномалия':'crimson'})
-    st.plotly_chart(fig, use_container_width=True)
-
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        low_df.to_excel(writer, sheet_name='Низкие', index=False)
-        high_df.to_excel(writer, sheet_name='Высокие', index=False)
-    buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-if __name__ == "__main__":
-    main()
+        low_df = df[
+        df['Списания %'].between(lw_min, lw_max) &
+        df['Закрытие потребности %'].between(lf_min, lf_max)
+    ]
+    high_df = df[(df['Списания %']>=hw_thr) & (    df['Закрытие потребности %'] = pd.to_numeric(
+        df[fill_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce'
+    )
+    df['Списания %'] = pd.to_numeric(
+        df[waste_col].astype(str).str.replace(',','.').str.rstrip('%'), errors='coerce'
+    )
+    df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
