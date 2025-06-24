@@ -30,22 +30,20 @@ def load_and_prepare(uploaded):
     fmt_col = next((c for c in df.columns if 'формат' in c.lower() or 'format' in c.lower()), None)
     if fmt_col:
         df = df.rename(columns={fmt_col: 'Формат'})
-    # Автовыбор колонки Склад (рус/лат)
-    wh_col = next((c for c in df.columns if 'склад' in c.lower() or 'sklad' in c.lower()), None)
+        # Автовыбор колонки Склад (рус/лат), приоритет name_sklad
+    wh_col = None
+    # сначала ищем явно 'name_sklad'
+    for c in df.columns:
+        if c.lower() == 'name_sklad' or 'name_sklad' in c.lower():
+            wh_col = c
+            break
+    # затем общее совпадение 'склад', но не 'id_sklad'
+    if not wh_col:
+        wh_col = next((c for c in df.columns if 'склад' in c.lower() and 'id_' not in c.lower()), None)
     if wh_col:
         df = df.rename(columns={wh_col: 'Склад'})
 
     # Проверяем наличие обязательных колонок
-    for req in ['Категория','Группа','Name_tov','Формат','Склад']:
-        if req not in df.columns:
-            raise KeyError(f"Не найдена колонка '{req}'")
-
-    # Поиск полей процентов и суммы
-    for req in ['Категория','Группа','Name_tov','Формат','Склад']:
-        if req not in df.columns:
-            raise KeyError(f"Не найдена колонка '{req}'")
-
-    # Поиск полей процентов и суммы
     for req in ['Категория','Группа','Name_tov','Формат','Склад']:
         if req not in df.columns:
             raise KeyError(f"Не найдена колонка '{req}'")
@@ -81,24 +79,6 @@ def load_and_prepare(uploaded):
     ).to_dict()
     df['group_weighted_mean_waste'] = df['Группа'].map(weights)
 
-    return df
-
-@st.cache_data
-def score_anomalies(df):
-    df = df.copy()
-    df['anomaly_score'] = 0.0
-    for grp, sub in df.groupby('Группа'):
-        X = sub[['Списания %','Закрытие потребности %']]
-        iso = IsolationForest(contamination=0.05, random_state=42,
-                              n_jobs=-1, n_estimators=50)
-        iso.fit(X)
-        df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
-    df['anomaly_severity'] = df['anomaly_score'].abs()
-    df['sales_share_in_group'] = (
-        df['Продажа с ЗЦ сумма']/
-        df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum')
-    ).fillna(0)
-    df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group']
     return df
 
 
@@ -168,7 +148,12 @@ def main():
     sale_range = st.sidebar.slider("Выручка (₽)", sale_min, sale_max, (sale_min, sale_max), step=1)
     df = df[df['Продажа с ЗЦ сумма'].between(*sale_range)]
 
-    preset = st.sidebar.radio("Пресет чувствительности", ["Нет","Слабая","Средняя","Высокая"])
+        # Пресеты чувствительности и ручная настройка
+    st.sidebar.header("Чувствительность")
+    preset = st.sidebar.radio(
+        "Пресет чувствительности", 
+        ["Нет (ручная настройка)","Слабая","Средняя","Высокая"]
+    )
     if preset == "Слабая":
         lw_def, lf_def, hw_def, hf_def = (0.5,15),(5,85),15,60
     elif preset == "Средняя":
@@ -176,15 +161,53 @@ def main():
     elif preset == "Высокая":
         lw_def, lf_def, hw_def, hf_def = (0.5,5),(20,60),25,90
     else:
+        # Ручная настройка: задаём полные диапазоны
         lw_def, lf_def, hw_def, hf_def = (0.0,100),(0.0,100),0,0
 
-    low = st.sidebar.slider("Списания % диапазон", 0.0, 100.0, lw_def, step=0.1)
-    close = st.sidebar.slider("Закрытие % диапазон", 0.0, 100.0, lf_def, step=0.1)
-    high_waste = st.sidebar.slider("Порог списание %", 0.0, 200.0, hw_def, step=0.1)
-    high_close = st.sidebar.slider("Порог закрытие %", 0.0, 200.0, hf_def, step=0.1)
+    # Ручная настройка через ползунки и ввод
+    st.sidebar.header("Низкие списания + низкое закрытие")
+    low_slider = st.sidebar.slider(
+        "Списания % (диапазон)", 0.0, 100.0, lw_def, step=0.1
+    )
+    lw_min = st.sidebar.number_input(
+        "Мин. списания %", 0.0, 100.0, value=low_slider[0], step=0.1
+    )
+    lw_max = st.sidebar.number_input(
+        "Макс. списания %", 0.0, 100.0, value=low_slider[1], step=0.1
+    )
 
-    low_df = df[df['Списания %'].between(*low) & df['Закрытие потребности %'].between(*close)]
-    high_df = df[(df['Списания %']>=high_waste) & (df['Закрытие потребности %']>=high_close)]
+    close_slider = st.sidebar.slider(
+        "Закрытие % (диапазон)", 0.0, 100.0, lf_def, step=0.1
+    )
+    lf_min = st.sidebar.number_input(
+        "Мин. закрытие %", 0.0, 100.0, value=close_slider[0], step=0.1
+    )
+    lf_max = st.sidebar.number_input(
+        "Макс. закрытие %", 0.0, 100.0, value=close_slider[1], step=0.1
+    )
+
+    st.sidebar.header("Высокие списания + высокое закрытие")
+    hw_slider = st.sidebar.slider(
+        "Порог списания %", 0.0, 200.0, hw_def, step=0.1
+    )
+    hw_thr = st.sidebar.number_input(
+        "Порог списания % вручную", 0.0, 200.0, value=hw_slider, step=0.1
+    )
+    hf_slider = st.sidebar.slider(
+        "Порог закрытия %", 0.0, 200.0, hf_def, step=0.1
+    )
+    hf_thr = st.sidebar.number_input(
+        "Порог закрытия % вручную", 0.0, 200.0, value=hf_slider, step=0.1
+    )("Порог закрытие %", 0.0, 200.0, hf_def, step=0.1)
+
+        low_df = df[
+        df['Списания %'].between(lw_min, lw_max) &
+        df['Закрытие потребности %'].between(lf_min, lf_max)
+    ]
+        high_df = df[
+        (df['Списания %'] >= hw_thr) &
+        (df['Закрытие потребности %'] >= hf_thr)
+    ]
 
     display_anomaly_table(low_df.sort_values('combined_score', ascending=False), "Низкие списания + низкое закрытие")
     display_anomaly_table(high_df.sort_values('combined_score', ascending=False), "Высокие списания + высокое закрытие")
