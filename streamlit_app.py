@@ -7,7 +7,8 @@ import plotly.express as px
 
 st.set_page_config(page_title="Аномалии: списания & закрытие", layout="wide")
 
-@st.cache_data
+# Убираем кэш, чтобы всегда обновлять данные при каждом деплое
+
 def load_and_prepare(uploaded):
     name = uploaded.name.lower()
     if name.endswith((".xls", ".xlsx")):
@@ -93,7 +94,8 @@ def load_and_prepare(uploaded):
 
     return agg
 
-@st.cache_data
+# Оценка аномалий без кэша
+
 def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
@@ -147,8 +149,9 @@ def main():
     if not uploaded:
         return
 
-    # полные аггрегированные данные до фильтрации
     full_df = score_anomalies(load_and_prepare(uploaded))
+    # Для отладки: покажем первые 10 строк с разными конечными метриками
+    st.write("**Первые 10 комбинаций (для отладки)**", full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
     df = full_df.copy()
 
     sb = st.sidebar
@@ -233,7 +236,7 @@ def main():
     st.download_button("Скачать Excel", buf, "anomalies.xlsx", 
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # Таблица сравнения по всем форматам и складам (по всем данным, не по фильтру)
+    # Сравнение по всем форматам/складам
     st.header("Сравнение по форматам и складам (все данные)")
     with st.expander("Показать/скрыть полное сравнение"):
         comp = full_df.groupby(['Формат', 'Склад']).agg({
@@ -242,15 +245,16 @@ def main():
             'Продажа с ЗЦ сумма': 'sum'
         }).reset_index().sort_values('Продажа с ЗЦ сумма', ascending=False)
 
-        sty = comp.style.format({
-            'Списания %': '{:.1f}',
-            'Закрытие потребности %': '{:.1f}',
-            'Продажа с ЗЦ сумма': '{:.0f}'
-        }).background_gradient(subset=['Списания %'], cmap='Reds')\
-          .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
-
-        st.dataframe(sty, use_container_width=True)
-
+        st.dataframe(
+            comp.style.format({
+                'Списания %': '{:.1f}',
+                'Закрытие потребности %': '{:.1f}',
+                'Продажа с ЗЦ сумма': '{:.0f}'
+            })
+            .background_gradient(subset=['Списания %'], cmap='Reds')
+            .background_gradient(subset=['Закрытие потребности %'], cmap='Blues'),
+            use_container_width=True
+        )
 
 if __name__ == "__main__":
     main()
