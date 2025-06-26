@@ -147,8 +147,9 @@ def main():
     if not uploaded:
         return
 
-    df = load_and_prepare(uploaded)
-    df = score_anomalies(df)
+    # полные аггрегированные данные до фильтрации
+    full_df = score_anomalies(load_and_prepare(uploaded))
+    df = full_df.copy()
 
     sb = st.sidebar
     sb.header("Фильтрация")
@@ -229,13 +230,13 @@ def main():
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx",
+    st.download_button("Скачать Excel", buf, "anomalies.xlsx", 
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # Сравнение по форматам и складам
-    st.header("Сравнение по форматам и складам")
-    with st.expander("Показать/скрыть сравнение"):
-        comp = df.groupby(['Формат', 'Склад']).agg({
+    # Таблица сравнения по всем форматам и складам (по всем данным, не по фильтру)
+    st.header("Сравнение по форматам и складам (все данные)")
+    with st.expander("Показать/скрыть полное сравнение"):
+        comp = full_df.groupby(['Формат', 'Склад']).agg({
             'Списания %': 'mean',
             'Закрытие потребности %': 'mean',
             'Продажа с ЗЦ сумма': 'sum'
@@ -245,11 +246,11 @@ def main():
             'Списания %': '{:.1f}',
             'Закрытие потребности %': '{:.1f}',
             'Продажа с ЗЦ сумма': '{:.0f}'
-        })
-        sty = sty.background_gradient(subset=['Списания %'], cmap='Reds')
-        sty = sty.background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
+        }).background_gradient(subset=['Списания %'], cmap='Reds')\
+          .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
 
         st.dataframe(sty, use_container_width=True)
+
 
 if __name__ == "__main__":
     main()
