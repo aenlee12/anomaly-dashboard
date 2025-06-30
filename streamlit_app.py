@@ -212,9 +212,6 @@ def main():
     low_df = df[df['Списания %'].between(low_min, low_max) & df['Закрытие потребности %'].between(close_min, close_max)]
     high_df = df[(df['Списания %'] >= hw_thr) & (df['Закрытие потребности %'] >= hf_thr)]
 
-    display_anomaly_table(low_df.sort_values('combined_score', ascending=False), "Низкие списания + низкое закрытие")
-    display_anomaly_table(high_df.sort_values('combined_score', ascending=False), "Высокие списания + высокое закрытие")
-# Ограничиваем вывод до топ-100 по combined_score
     low_top = low_df.sort_values('combined_score', ascending=False).head(100)
     high_top = high_df.sort_values('combined_score', ascending=False).head(100)
 
@@ -223,7 +220,7 @@ def main():
         "Низкие списания + низкое закрытие (топ-100)"
     )
     display_anomaly_table(
-       high_top,
+        high_top,
         "Высокие списания + высокое закрытие (топ-100)"
     )
     # Scatter plot
