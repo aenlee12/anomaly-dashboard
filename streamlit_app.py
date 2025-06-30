@@ -4,6 +4,7 @@ import numpy as np
 from io import BytesIO
 from sklearn.ensemble import IsolationForest
 import plotly.express as px
+from st_aggrid import AgGrid, GridOptionsBuilder
 
 st.set_page_config(page_title="Аномалии: списания & закрытие", layout="wide")
 
@@ -236,14 +237,46 @@ def main():
     st.download_button("Скачать Excel", buf, "anomalies.xlsx", 
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # Сравнение по всем форматам/складам
-    st.header("Сравнение по форматам и складам (все данные)")
-    with st.expander("Показать/скрыть полное сравнение"):
-        comp = full_df.groupby(['Формат', 'Склад']).agg({
+    # Иерархическое сравнение по складам, форматам, категориям и группам
+    st.header("Сравнение по форматам и складам (древовидно)")
+    with st.expander("Показать/скрыть полное иерархическое сравнение"):
+        # Группируем сразу по четырём уровням
+        comp = full_df.groupby(['Склад', 'Формат', 'Категория', 'Группа']).agg({
             'Списания %': 'mean',
             'Закрытие потребности %': 'mean',
             'Продажа с ЗЦ сумма': 'sum'
-        }).reset_index().sort_values('Продажа с ЗЦ сумма', ascending=False)
+        }).reset_index()
+
+        # Оставляем колонки в порядке ветвления
+        comp = comp[['Склад', 'Формат', 'Категория', 'Группа', 'Списания %', 'Закрытие потребности %']]
+
+        # Настраиваем AgGrid для Tree Data
+        gb = GridOptionsBuilder.from_dataframe(comp)
+        gb.configure_grid_options(
+            treeData=True,
+            animateRows=True,
+            groupDefaultExpanded=0,               # 0 — все свернуты, -1 — все развёрнуты
+            getDataPath=['Склад', 'Формат', 'Категория', 'Группа']
+        )
+        # Скрываем столбцы группировки, чтобы не дублировались
+        gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
+        # Форматируем проценты на финальных уровнях
+        gb.configure_columns(
+            ['Списания %', 'Закрытие потребности %'],
+            type=['numericColumn'],
+            aggFunc='mean',
+            valueFormatter="x.toFixed(1) + '%'"
+        )
+
+        gridOptions = gb.build()
+
+        AgGrid(
+            comp,
+            gridOptions=gridOptions,
+            fit_columns_on_grid_load=True,
+            height=500,
+            enable_enterprise_modules=True
+        )
 
         st.dataframe(
             comp.style.format({
