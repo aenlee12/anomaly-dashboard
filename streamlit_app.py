@@ -51,8 +51,8 @@ def load_and_prepare(uploaded):
     df['Закрытие потребности %'] = (
         pd.to_numeric(
             df[fill_col].astype(str)
-                      .str.replace(',', '.')
-                      .str.rstrip('%'),
+                          .str.replace(',', '.')
+                          .str.rstrip('%'),
             errors='coerce'
         ) * 100
     )
@@ -82,9 +82,13 @@ def load_and_prepare(uploaded):
     tot = grp['Продажа с ЗЦ сумма'].sum()
     waste = grp.apply(
         lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
+                  else x['Списания %'].mean()
     )
     fillp = grp.apply(
         lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
+                  else x['Закрытие потребности %'].mean()
     )
     agg = pd.concat([tot, waste, fillp], axis=1).reset_index()
     agg.columns = grp_cols + ['Продажа с ЗЦ сумма', 'Списания %', 'Закрытие потребности %']
@@ -93,6 +97,8 @@ def load_and_prepare(uploaded):
     agg['avg_waste_in_group'] = agg.groupby('Группа')['Списания %'].transform('mean')
     wmap = agg.groupby('Группа').apply(
         lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
+                  else x['Списания %'].mean()
     ).to_dict()
     agg['wavg_waste_in_group'] = agg['Группа'].map(wmap)
 
@@ -172,7 +178,6 @@ def display_anomaly_table(df, title):
 
 def main():
     st.title("Аномалии: списания и закрытие потребности")
-
     uploaded = st.file_uploader("Загрузите CSV или Excel", type=['csv','xls','xlsx'])
     if not uploaded:
         return
@@ -188,13 +193,11 @@ def main():
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация аномалий")
-
     cats = sorted(df['Категория'].unique())
     sel_cats = sb.multiselect("Категории", cats, default=cats)
     grps = sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique())
     sel_grps = sb.multiselect("Группы", grps, default=grps)
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
-
     if df.empty:
         st.warning("Нет данных после фильтров")
         return
@@ -225,7 +228,7 @@ def main():
     display_anomaly_table(high_df.sort_values('combined', ascending=False).head(100),
                           "Высокие списания + высокое закрытие (топ-100)")
 
-    # иерархическая фильтрация через закэшированный comp
+    # Иерархическая фильтрация через закэшированный comp
     comp = get_hierarchy_df(full_df)
     st.subheader("Иерархическая фильтрация")
     hdf = comp.copy()
