@@ -34,7 +34,7 @@ def load_and_prepare(uploaded):
     df = df.rename(columns=col_map)
 
     # Проверка обязательных колонок
-    for req in ['Категория','Группа','Name_tov','Формат','Склад']:
+    for req in ['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']:
         if req not in df.columns:
             raise KeyError(f"Missing column '{req}'")
 
@@ -58,12 +58,15 @@ def load_and_prepare(uploaded):
     for c in (zc2, srok, kach):
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     df['Списания %'] = np.where(
-        df['Продажа с ЗЦ сумма']>0,
-        (df[zc2]+df[srok]+df[kach])/df['Продажа с ЗЦ сумма']*100,
+        df['Продажа с ЗЦ сумма'] > 0,
+        (df[zc2] + df[srok] + df[kach]) / df['Продажа с ЗЦ сумма'] * 100,
         0
     )
 
-    df = df.dropna(subset=['Категория','Группа','Name_tov','Формат','Склад','Списания %','Закрытие потребности %'])
+    df = df.dropna(subset=[
+        'Категория', 'Группа', 'Name_tov', 'Формат', 'Склад',
+        'Списания %', 'Закрытие потребности %'
+    ])
     return df
 
 
@@ -71,14 +74,17 @@ def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
     for grp, sub in df.groupby('Группа'):
-        if len(sub)<2: continue
-        X = sub[['Списания %','Закрытие потребности %']]
-        iso = IsolationForest(contamination=0.05, random_state=42, n_estimators=30, n_jobs=-1)
+        if len(sub) < 2:
+            continue
+        X = sub[['Списания %', 'Закрытие потребности %']]
+        iso = IsolationForest(contamination=0.05, random_state=42,
+                              n_estimators=30, n_jobs=-1)
         iso.fit(X)
-        df.loc[sub.index,'anomaly_score'] = -iso.decision_function(X)
+        df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
     df['severity'] = df['anomaly_score'].abs()
-    df['share']    = df['Продажа с ЗЦ сумма'] / df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum').fillna(1)
-    df['combined'] = df['severity']*df['share']
+    df['share'] = df['Продажа с ЗЦ сумма'] / \
+        df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum').fillna(1)
+    df['combined'] = df['severity'] * df['share']
     return df
 
 
@@ -89,37 +95,56 @@ def process_data(uploaded):
 
 def display_anomaly_table(df: pd.DataFrame, title: str):
     """
-    Таблица аномалий с сортировкой по Скору (combined) и уникальными
-    средними комбо-метриками по ['Склад','Формат','Категория','Группа'].
+    Выводит таблицу аномалий с уникальными
+    combo_mean_waste и combo_weighted_mean_waste,
+    рассчитанными по ключам
+    ['Склад','Формат','Категория','Группа'].
     """
     df = df.copy()
     combo_keys = ['Склад','Формат','Категория','Группа']
 
-    # Простой и взвешенный mean по combo_keys
-    df['Среднее комбо %'] = df.groupby(combo_keys)['Списания %'].transform('mean')
-    def wavg(x):
-        w = x['Продажа с ЗЦ сумма']; v = x['Списания %']
-        return np.average(v, weights=w) if w.sum()>0 else v.mean()
-    w = df.groupby(combo_keys).apply(wavg).rename('Ср.взв. комбо %')
-    df = df.join(w, on=combo_keys)
+    # Простое среднее по каждой комбинации ключей
+    df['combo_mean_waste'] = df.groupby(combo_keys)['Списания %'].transform('mean')
 
-    # Сортируем по Скору (combined) убывающе
-    df = df.sort_values('combined', ascending=False)
+    # Взвешенное среднее по тем же ключам
+    def weighted_avg(x):
+        w = x['Продажа с ЗЦ сумма']
+        v = x['Списания %']
+        return np.average(v, weights=w) if w.sum()>0 else v.mean()
+
+    wavg = (
+        df
+        .groupby(combo_keys)
+        .apply(weighted_avg)
+        .rename('combo_wavg_waste')
+    )
+    df = df.join(wavg, on=combo_keys)
+
+    # Переименование полей
+    df = df.rename(columns={
+        'combo_mean_waste':   'Среднее комбо %',
+        'combo_wavg_waste':   'Ср.взв. комбо %',
+        'severity':           'Степень аномалии',
+        'combined':           'Скор'
+    })
 
     st.subheader(f"{title} — {len(df)}")
     display_cols = [
         'Категория','Группа','Формат','Склад','Name_tov',
         'Списания %','Среднее комбо %','Ср.взв. комбо %',
         'Закрытие потребности %','Продажа с ЗЦ сумма',
-        'severity','combined'
+        'Степень аномалии','Скор'
     ]
     styled = (
         df[display_cols]
-        .rename(columns={'severity':'Степень аномалии','combined':'Скор'})
         .style.format({
-            'Списания %':'{:.1f}','Среднее комбо %':'{:.1f}','Ср.взв. комбо %':'{:.1f}',
-            'Закрытие потребности %':'{:.1f}','Продажа с ЗЦ сумма':'{:.0f}',
-            'Степень аномалии':'{:.3f}','Скор':'{:.3f}'
+            'Списания %':           '{:.1f}',
+            'Среднее комбо %':       '{:.1f}',
+            'Ср.взв. комбо %':       '{:.1f}',
+            'Закрытие потребности %':'{:.1f}',
+            'Продажа с ЗЦ сумма':    '{:.0f}',
+            'Степень аномалии':     '{:.3f}',
+            'Скор':                  '{:.3f}'
         })
         .background_gradient(subset=['Списания %'], cmap='Reds')
         .background_gradient(subset=['Закрытие потребности %'], cmap='Blues')
@@ -137,16 +162,18 @@ def main():
 
     full_df = process_data(uploaded)
 
-    # Sidebar: фильтрация по складам, форматам, категориям, группам
+    # Sidebar: фильтрация по складам, форматам, категориям, группам, выручке и чувствительности
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
 
-    sel_whs  = sb.multiselect("Склады",  sorted(df['Склад'].unique()),              default=sorted(df['Склад'].unique()))
+    # Склады и Форматы
+    sel_whs  = sb.multiselect("Склады",  sorted(df['Склад'].unique()),        default=sorted(df['Склад'].unique()))
     sel_fmts = sb.multiselect("Форматы", sorted(df[df['Склад'].isin(sel_whs)]['Формат'].unique()), default=None)
     df = df[df['Склад'].isin(sel_whs) & df['Формат'].isin(sel_fmts or df['Формат'].unique())]
 
-    sel_cats = sb.multiselect("Категории", sorted(df['Категория'].unique()),          default=sorted(df['Категория'].unique()))
+    # Категории и Группы
+    sel_cats = sb.multiselect("Категории", sorted(df['Категория'].unique()), default=sorted(df['Категория'].unique()))
     sel_grps = sb.multiselect("Группы",     sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique()), default=None)
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps or df['Группа'].unique())]
 
@@ -154,7 +181,7 @@ def main():
         st.warning("Нет данных после фильтров")
         return
 
-    # Фильтр по выручке
+    # Выручка (₽)
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     rev_min, rev_max = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
     df = df[df['Продажа с ЗЦ сумма'].between(rev_min, rev_max)]
@@ -180,33 +207,25 @@ def main():
     hw_thr = sb.number_input("Порог списания %",  0.0,200.0,hw_thr,step=0.1)
     hf_thr = sb.number_input("Порог закрытия %",  0.0,200.0,hf_thr,step=0.1)
 
-    # Отбираем низкие и высокие аномалии из отфильтрованного df
-    low_df  = df[df['Списания %'].between(low_min, low_max)     & df['Закрытие потребности %'].between(close_min, close_max)]
+    low_df  = df[df['Списания %'].between(low_min, low_max) & df['Закрытие потребности %'].between(close_min, close_max)]
     high_df = df[(df['Списания %'] >= hw_thr) & (df['Закрытие потребности %'] >= hf_thr)]
 
-    # 1) Таблицы аномалий (сортировка по Скору внутри display_anomaly_table)
+    # Таблицы аномалий
     display_anomaly_table(low_df,  "Низкие списания + низкое закрытие (топ-100)")
     display_anomaly_table(high_df, "Высокие списания + высокое закрытие (топ-100)")
 
-    # 2) Диаграмма всех SKU (не зависит от фильтра: используется full_df)
+    # Диаграмма всех SKU
     st.subheader("Диаграмма всех SKU")
-    bubble = full_df.copy()
-
-    # Маски на полном пуле
-    mask_anom = (
-        (bubble['Списания %'].between(low_min, low_max) &
-         bubble['Закрытие потребности %'].between(close_min, close_max))
-        |
-        (bubble['Списания %'] >= hw_thr) &
-        (bubble['Закрытие потребности %'] >= hf_thr)
+    mask_anom   = df.index.isin(pd.concat([low_df, high_df]).index)
+    mask_report = df.index.isin(
+        pd.concat([low_df.head(100), high_df.head(100)]).index
     )
-    mask_report = bubble.index.isin(pd.concat([low_df, high_df]).index)
-
-    bubble['Статус'] = np.where(mask_report, 'В отчете',
-                          np.where(mask_anom,    'Аномалия','Норма'))
+    df_plot = df.copy()
+    df_plot['Статус'] = np.where(mask_report, 'В отчете',
+                          np.where(mask_anom, 'Аномалия','Норма'))
 
     fig = px.scatter(
-        bubble,
+        df_plot,
         x='Закрытие потребности %',
         y='Списания %',
         color='Статус',
