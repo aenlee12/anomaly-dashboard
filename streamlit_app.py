@@ -177,10 +177,13 @@ def main():
         st.warning("Нет данных после фильтров")
         return
 
-    # Слайдеры выручки
+        # Слайдеры выручки
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
-    df = df[df['Продажа с ЗЦ сумму'].between(sel_rng[0], sel_rng[1])]
+    # Применяем фильтр к правильному названию колонки
+    df = df[df['Продажа с ЗЦ сумма'].between(sel_rng[0], sel_rng[1])]("Выручка (₽)", smin, smax, (smin, smax), step=1)
+    # Фильтрация по диапазону выручки
+    df = df[df['Продажа с ЗЦ сумма'].between(sel_rng[0], sel_rng[1])]
 
     sb.markdown("---")
     sb.header("Чувствительность")
