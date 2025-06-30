@@ -69,19 +69,30 @@ def load_and_prepare(uploaded):
 
     df = df.dropna(subset=required + ['Списания %', 'Закрытие потребности %'])
 
-    # Агрегация
+        # Агрегация
     grp_cols = ['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']
     grp = df.groupby(grp_cols)
     total = grp['Продажа с ЗЦ сумма'].sum()
-    waste = grp.apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']), include_groups=False)
-    fill = grp.apply(lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма']), include_groups=False)
+
+    # Безопасное вычисление средневзвешенных значений
+    def weighted_avg(x, col):
+        sales = x['Продажа с ЗЦ сумма']
+        if sales.sum() > 0:
+            return np.average(x[col], weights=sales)
+        else:
+            return x[col].mean()
+
+    waste = grp.apply(lambda x: weighted_avg(x, 'Списания %'), include_groups=False)
+    fill = grp.apply(lambda x: weighted_avg(x, 'Закрытие потребности %'), include_groups=False)
+
     agg = pd.concat([total, waste, fill], axis=1).reset_index()
     agg.columns = grp_cols + ['Продажа с ЗЦ сумма', 'Списания %', 'Закрытие потребности %']
 
     # Групповые метрики
     agg['group_mean_waste'] = agg.groupby('Группа')['Списания %'].transform('mean')
+    # Средневзвешенное по группам с защитой от нулевого веса
     wmap = agg.groupby('Группа').apply(
-        lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']), include_groups=False
+        lambda g: weighted_avg(g, 'Списания %'), include_groups=False
     ).to_dict()
     agg['group_weighted_mean_waste'] = agg['Группа'].map(wmap)
 
