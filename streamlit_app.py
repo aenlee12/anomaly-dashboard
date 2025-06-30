@@ -66,8 +66,8 @@ def load_and_prepare(uploaded):
     for c in (col_zc2, col_srok, col_kach):
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     df['Списания %'] = np.where(
-        df['Продажа с ZЦ сумма'] > 0,
-        (df[col_zc2] + df[col_srok] + df[col_kach]) / df['Продажа с ZЦ сумма'] * 100,
+        df['Продажа с ЗЦ сумма'] > 0,
+        (df[col_zc2] + df[col_srok] + df[col_kach]) / df['Продажа с ЗЦ сумма'] * 100,
         0
     )
 
@@ -79,25 +79,25 @@ def load_and_prepare(uploaded):
     # Агрегация по SKU → Формат → Склад
     grp_cols = ['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']
     grp = df.groupby(grp_cols)
-    tot = grp['Продажа с ZЦ сумма'].sum()
+    tot = grp['Продажа с ЗЦ сумма'].sum()
     waste = grp.apply(
-        lambda x: np.average(x['Списания %'], weights=x['Продажа с ZЦ сумма'])
-                  if x['Продажа с ZЦ сумма'].sum() > 0
+        lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
                   else x['Списания %'].mean()
     )
     fillp = grp.apply(
-        lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ZЦ сумма'])
-                  if x['Продажа с ZЦ сумма'].sum() > 0
+        lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
                   else x['Закрытие потребности %'].mean()
     )
     agg = pd.concat([tot, waste, fillp], axis=1).reset_index()
-    agg.columns = grp_cols + ['Продажа с ZЦ сумма', 'Списания %', 'Закрытие потребности %']
+    agg.columns = grp_cols + ['Продажа с ЗЦ сумма', 'Списания %', 'Закрытие потребности %']
 
     # Групповые метрики
     agg['avg_waste_in_group'] = agg.groupby('Группа')['Списания %'].transform('mean')
     wmap = agg.groupby('Группа').apply(
-        lambda x: np.average(x['Списания %'], weights=x['Продажа с ZЦ сумма'])
-                  if x['Продажа с ZЦ сумма'].sum() > 0
+        lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма'])
+                  if x['Продажа с ЗЦ сумма'].sum() > 0
                   else x['Списания %'].mean()
     ).to_dict()
     agg['wavg_waste_in_group'] = agg['Группа'].map(wmap)
@@ -117,33 +117,29 @@ def score_anomalies(df):
         iso.fit(X)
         df.loc[sub.index, 'anomaly_score'] = -iso.decision_function(X)
     df['severity'] = df['anomaly_score'].abs()
-    df['share'] = df['Продажа с ZЦ сумма'] / \
-        df.groupby('Группа')['Продажа с ZЦ сумма'].transform('sum').fillna(1)
+    df['share'] = df['Продажа с ЗЦ сумма'] / \
+        df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum').fillna(1)
     df['combined'] = df['severity'] * df['share']
     return df
 
 
 @st.cache_data(show_spinner=False)
 def process_data(uploaded):
-    """Кэшируем чтение, подготовку и оценку аномалий."""
-    prepared = load_and_prepare(uploaded)
-    return score_anomalies(prepared)
+    return score_anomalies(load_and_prepare(uploaded))
 
 
 @st.cache_data(show_spinner=False)
 def get_hierarchy_df(full_df):
-    """Кэшируем агрегат для иерархической фильтрации."""
-    comp = (
+    return (
         full_df
         .groupby(['Склад','Формат','Категория','Группа'])
         .agg({
             'Списания %':'mean',
             'Закрытие потребности %':'mean',
-            'Продажа с ZЦ сумма':'sum'
+            'Продажа с ЗЦ сумма':'sum'
         })
         .reset_index()
     )
-    return comp
 
 
 def display_anomaly_table(df, title):
@@ -158,14 +154,14 @@ def display_anomaly_table(df, title):
         df.rename(columns=rename)
           [['Категория','Группа','Формат','Склад','Name_tov',
             'Списания %','Среднее в группе %','Ср.взв. в группе %',
-            'Закрытие потребности %','Продажа с ZЦ сумма',
+            'Закрытие потребности %','Продажа с ЗЦ сумма',
             'Степень аномалии','Скор']]
           .style.format({
              'Списания %':'{:.1f}',
              'Среднее в группе %':'{:.1f}',
              'Ср.взв. в группе %':'{:.1f}',
              'Закрытие потребности %':'{:.1f}',
-             'Продажа с ZЦ сумма':'{:.0f}',
+             'Продажа с ЗЦ сумма':'{:.0f}',
              'Степень аномалии':'{:.3f}',
              'Скор':'{:.3f}'
           })
@@ -183,31 +179,28 @@ def main():
     if not uploaded:
         return
 
-    # Парсим и считаем аномалии один раз
     full_df = process_data(uploaded)
 
-    # Отладочный вывод
     st.write("**Первые 10 строк (отладка)**")
     st.dataframe(full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
 
-    # Sidebar — фильтрация по выручке и чувствительности
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
 
-    # Категории и группы
+    # категории и группы
     cats = sorted(df['Категория'].unique())
     sel_cats = sb.multiselect("Категории", cats, default=cats)
     grps = sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique())
     sel_grps = sb.multiselect("Группы", grps, default=grps)
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
 
-    # Фильтр по выручке
-    smin, smax = int(df['Продажа с ZЦ сумма'].min()), int(df['Продажа с ZЦ сумма'].max())
+    # фильтр по выручке
+    smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
     min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, sel_rng[0], step=1)
     max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, sel_rng[1], step=1)
-    df = df[df['Продажа с ZЦ сумма'].between(min_rev, max_rev)]
+    df = df[df['Продажа с ЗЦ сумма'].between(min_rev, max_rev)]
 
     sb.markdown("---")
     sb.header("Чувствительность")
@@ -239,36 +232,25 @@ def main():
     display_anomaly_table(high_df.sort_values('combined', ascending=False).head(100),
                           "Высокие списания + высокое закрытие (топ-100)")
 
-    # Scatter-plot: x = закрытие, y = списания, все SKU
+    # Диаграмма всех SKU
     st.subheader("Диаграмма всех SKU")
     mask_anom = df.index.isin(pd.concat([low_df, high_df]).index)
     mask_report = df.index.isin(
-        pd.concat([low_df.sort_values('combined', ascending=False).head(100),
-                   high_df.sort_values('combined', ascending=False).head(100)]
-        ).index
+        pd.concat([low_df.head(100), high_df.head(100)]).index
     )
     df_plot = df.copy()
-    def status_label(i):
-        if mask_report[i]:
-            return 'В отчете'
-        if mask_anom[i]:
-            return 'Аномалия'
-        return 'Норма'
-    df_plot['Статус'] = [status_label(i) for i in df_plot.index]
+    df_plot['Статус'] = np.where(mask_report, 'В отчете',
+                          np.where(mask_anom, 'Аномалия','Норма'))
 
     fig = px.scatter(
         df_plot,
         x='Закрытие потребности %',
         y='Списания %',
         color='Статус',
-        size='Продажа с ZЦ сумма',
+        size='Продажа с ЗЦ сумма',
         opacity=0.6,
         hover_data=['Name_tov','Группа','Формат','Склад'],
-        color_discrete_map={
-            'Норма':'lightgray',
-            'Аномалия':'crimson',
-            'В отчете':'purple'
-        }
+        color_discrete_map={'Норма':'lightgray','Аномалия':'crimson','В отчете':'purple'}
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -291,7 +273,7 @@ def main():
 
     st.dataframe(
         hdf[['Склад','Формат','Категория','Группа',
-             'Списания %','Закрытие потребности %','Продажа с ZЦ сумма']],
+             'Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
         use_container_width=True
     )
 
@@ -301,12 +283,9 @@ def main():
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button(
-        "Скачать Excel",
-        buf,
-        "anomalies.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("Скачать Excel", buf,
+                       "anomalies.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 if __name__ == "__main__":
