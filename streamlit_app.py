@@ -231,13 +231,13 @@ def main():
             getDataPath=['Склад','Формат','Категория','Группа']
         )
         gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
-        # Настройка колонок с форматированием значений
+                # Настройка колонок с форматированием значений
         gb.configure_columns(
             ['Списания %','Закрытие потребность %'],
             type=['numericColumn'],
             aggFunc='mean',
-            # Здесь можете изменить формат: например, округление до 1 знака и добавление '%'
             valueFormatter="params.value.toFixed(1) + '%'"
+        ) + '%'"
         ) + '%'"
         )
         gridOptions = gb.build()
