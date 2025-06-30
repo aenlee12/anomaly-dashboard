@@ -214,7 +214,18 @@ def main():
 
     display_anomaly_table(low_df.sort_values('combined_score', ascending=False), "Низкие списания + низкое закрытие")
     display_anomaly_table(high_df.sort_values('combined_score', ascending=False), "Высокие списания + высокое закрытие")
+# Ограничиваем вывод до топ-100 по combined_score
+    low_top = low_df.sort_values('combined_score', ascending=False).head(100)
+    high_top = high_df.sort_values('combined_score', ascending=False).head(100)
 
+    display_anomaly_table(
+        low_top,
+        "Низкие списания + низкое закрытие (топ-100)"
+    )
+    display_anomaly_table(
+       high_top,
+        "Высокие списания + высокое закрытие (топ-100)"
+    )
     # Scatter plot
     mask = df.index.isin(pd.concat([low_df, high_df]).index)
     df_plot = df.copy()
