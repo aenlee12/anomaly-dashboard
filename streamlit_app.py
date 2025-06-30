@@ -76,7 +76,7 @@ def load_and_prepare(uploaded):
     grp_cols = ['Категория', 'Группа', 'Name_tov', 'Формат', 'Склад']
     grp = df.groupby(grp_cols)
     tot = grp['Продажа с ЗЦ сумма'].sum()
-    waste = grp.apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма'])
+    waste = grp.apply(lambda x: np.average(x['Списания %'], weights=x['Продажа с ЗЦ сумма']) 
                       if x['Продажа с ЗЦ сумма'].sum() > 0 else x['Списания %'].mean())
     fill = grp.apply(lambda x: np.average(x['Закрытие потребности %'], weights=x['Продажа с ЗЦ сумма'])
                      if x['Продажа с ЗЦ сумма'].sum() > 0 else x['Закрытие потребности %'].mean())
@@ -93,6 +93,7 @@ def load_and_prepare(uploaded):
 
     return agg
 
+
 def score_anomalies(df):
     df = df.copy()
     df['anomaly_score'] = 0.0
@@ -107,6 +108,7 @@ def score_anomalies(df):
     df['sales_share_in_group'] = df['Продажа с ЗЦ сумма'] / df.groupby('Группа')['Продажа с ЗЦ сумма'].transform('sum').fillna(1)
     df['combined_score'] = df['anomaly_severity'] * df['sales_share_in_group']
     return df
+
 
 def display_anomaly_table(df, title):
     st.subheader(f"{title} (найдено {len(df)})")
@@ -137,6 +139,7 @@ def display_anomaly_table(df, title):
         .background_gradient(subset=['Скор в группе'], cmap='Purples')
     )
     st.dataframe(styler, use_container_width=True)
+
 
 def main():
     st.title("Аномалии: списания и закрытие потребности")
@@ -245,7 +248,7 @@ def main():
         )
         gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
         gb.configure_columns(
-            ['Списания %','Закрытие потребности %'],
+            ['Списания %','Закрытие потребность %'],
             type=['numericColumn'],
             aggFunc='mean',
             valueFormatter="x.toFixed(1) + '%'"
