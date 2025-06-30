@@ -18,7 +18,7 @@ def load_and_prepare(uploaded):
         df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
 
-    # Переименование колонок
+    # Переименование ключевых колонок
     col_map = {}
     if 'parent_group_name' in df.columns:
         col_map['parent_group_name'] = 'Категория'
@@ -50,9 +50,7 @@ def load_and_prepare(uploaded):
         raise KeyError("Missing fill percentage column")
     df['Закрытие потребности %'] = (
         pd.to_numeric(
-            df[fill_col].astype(str)
-                          .str.replace(',', '.')
-                          .str.rstrip('%'),
+            df[fill_col].astype(str).str.replace(',', '.').str.rstrip('%'),
             errors='coerce'
         ) * 100
     )
@@ -72,8 +70,8 @@ def load_and_prepare(uploaded):
     )
 
     df = df.dropna(subset=[
-        'Категория','Группа','Name_tov','Формат','Склад',
-        'Списания %','Закрытие потребности %'
+        'Категория', 'Группа', 'Name_tov', 'Формат', 'Склад',
+        'Списания %', 'Закрытие потребности %'
     ])
 
     # Агрегация по SKU → Формат → Склад
@@ -125,18 +123,20 @@ def score_anomalies(df):
 
 @st.cache_data(show_spinner=False)
 def process_data(uploaded):
+    """Чтение, подготовка и скоринг аномалий (кэшируется)."""
     return score_anomalies(load_and_prepare(uploaded))
 
 
 @st.cache_data(show_spinner=False)
 def get_hierarchy_df(full_df):
+    """Агрегат по складам, форматам, категориям и группам (кэшируется)."""
     return (
         full_df
-        .groupby(['Склад','Формат','Категория','Группа'])
+        .groupby(['Склад', 'Формат', 'Категория', 'Группа'])
         .agg({
-            'Списания %':'mean',
-            'Закрытие потребности %':'mean',
-            'Продажа с ЗЦ сумма':'sum'
+            'Списания %': 'mean',
+            'Закрытие потребности %': 'mean',
+            'Продажа с ЗЦ сумма': 'sum'
         })
         .reset_index()
     )
@@ -179,29 +179,36 @@ def main():
     if not uploaded:
         return
 
+    # 1) Загрузка и скоринг
     full_df = process_data(uploaded)
 
+    # 2) Отладочный вывод
     st.write("**Первые 10 строк (отладка)**")
-    st.dataframe(full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
+    st.dataframe(
+        full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10),
+        use_container_width=True
+    )
 
+    # 3) Сайдбар: фильтрация по выручке, категорию/группу, чувствительность
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
 
-    # категории и группы
+    # 3.1 Категории → группы (каскад)
     cats = sorted(df['Категория'].unique())
     sel_cats = sb.multiselect("Категории", cats, default=cats)
     grps = sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique())
     sel_grps = sb.multiselect("Группы", grps, default=grps)
     df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
 
-    # фильтр по выручке
+    # 3.2 Выручка
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
     min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, sel_rng[0], step=1)
     max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, sel_rng[1], step=1)
     df = df[df['Продажа с ЗЦ сумма'].between(min_rev, max_rev)]
 
+    # 3.3 Чувствительность
     sb.markdown("---")
     sb.header("Чувствительность")
     presets = {
@@ -227,20 +234,28 @@ def main():
     high_df = df[(df['Списания %'] >= hw_thr) &
                  (df['Закрытие потребности %'] >= hf_thr)]
 
-    display_anomaly_table(low_df.sort_values('combined', ascending=False).head(100),
-                          "Низкие списания + низкое закрытие (топ-100)")
-    display_anomaly_table(high_df.sort_values('combined', ascending=False).head(100),
-                          "Высокие списания + высокое закрытие (топ-100)")
+    # 4) Таблицы аномалий
+    display_anomaly_table(
+        low_df.sort_values('combined', ascending=False).head(100),
+        "Низкие списания + низкое закрытие (топ-100)"
+    )
+    display_anomaly_table(
+        high_df.sort_values('combined', ascending=False).head(100),
+        "Высокие списания + высокое закрытие (топ-100)"
+    )
 
-    # Диаграмма всех SKU
+    # 5) Диаграмма всех SKU
     st.subheader("Диаграмма всех SKU")
     mask_anom = df.index.isin(pd.concat([low_df, high_df]).index)
     mask_report = df.index.isin(
-        pd.concat([low_df.head(100), high_df.head(100)]).index
+        pd.concat([
+            low_df.sort_values('combined', ascending=False).head(100),
+            high_df.sort_values('combined', ascending=False).head(100)
+        ]).index
     )
     df_plot = df.copy()
     df_plot['Статус'] = np.where(mask_report, 'В отчете',
-                          np.where(mask_anom, 'Аномалия','Норма'))
+                          np.where(mask_anom, 'Аномалия', 'Норма'))
 
     fig = px.scatter(
         df_plot,
@@ -250,42 +265,50 @@ def main():
         size='Продажа с ЗЦ сумма',
         opacity=0.6,
         hover_data=['Name_tov','Группа','Формат','Склад'],
-        color_discrete_map={'Норма':'lightgray','Аномалия':'crimson','В отчете':'purple'}
+        color_discrete_map={
+            'Норма':'lightgray',
+            'Аномалия':'crimson',
+            'В отчете':'purple'
+        }
     )
+    fig.update_xaxes(range=[0,100])
+    fig.update_yaxes(range=[0,100])
     st.plotly_chart(fig, use_container_width=True)
 
-    # Иерархическая фильтрация (многовыбор)
-    comp = get_hierarchy_df(full_df)
+    # 6) Иерархическая фильтрация (каскад multiselect)
     st.subheader("Иерархическая фильтрация")
+    comp = get_hierarchy_df(full_df)
+
     hdf = comp.copy()
+    sel_whs  = st.multiselect("Склады",   sorted(hdf['Склад'].unique()),   default=sorted(hdf['Склад'].unique()))
+    hdf = hdf[hdf['Склад'].isin(sel_whs)]
 
-    sel_whs = st.multiselect("Склады", sorted(hdf['Склад'].unique()), default=sorted(hdf['Склад'].unique()))
-    sel_fmts = st.multiselect("Форматы", sorted(hdf['Формат'].unique()), default=sorted(hdf['Формат'].unique()))
-    sel_cats2 = st.multiselect("Категории", sorted(hdf['Категория'].unique()), default=sorted(hdf['Категория'].unique()))
-    sel_grps2 = st.multiselect("Группы", sorted(hdf['Группа'].unique()), default=sorted(hdf['Группа'].unique()))
+    sel_fmts = st.multiselect("Форматы",  sorted(hdf['Формат'].unique()),  default=sorted(hdf['Формат'].unique()))
+    hdf = hdf[hdf['Формат'].isin(sel_fmts)]
 
-    hdf = hdf[
-        hdf['Склад'].isin(sel_whs) &
-        hdf['Формат'].isin(sel_fmts) &
-        hdf['Категория'].isin(sel_cats2) &
-        hdf['Группа'].isin(sel_grps2)
-    ]
+    sel_cats2= st.multiselect("Категории",sorted(hdf['Категория'].unique()), default=sorted(hdf['Категория'].unique()))
+    hdf = hdf[hdf['Категория'].isin(sel_cats2)]
+
+    sel_grps2= st.multiselect("Группы",   sorted(hdf['Группа'].unique()),   default=sorted(hdf['Группа'].unique()))
+    hdf = hdf[hdf['Группа'].isin(sel_grps2)]
 
     st.dataframe(
-        hdf[['Склад','Формат','Категория','Группа',
-             'Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
+        hdf[['Склад','Формат','Категория','Группа','Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
         use_container_width=True
     )
 
-    # Экспорт в Excel
+    # 7) Экспорт в Excel
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf,
-                       "anomalies.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "Скачать Excel",
+        buf,
+        "anomalies.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 if __name__ == "__main__":
