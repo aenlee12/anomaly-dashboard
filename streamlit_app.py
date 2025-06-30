@@ -109,11 +109,13 @@ def score_anomalies(df):
 
 @st.cache_data(show_spinner=False)
 def process_data(uploaded):
+    """Чтение, подготовка и скоринг аномалий (кэшируется)."""
     return score_anomalies(load_and_prepare(uploaded))
 
 
 @st.cache_data(show_spinner=False)
 def get_hierarchy_df(full_df):
+    """Агрегат по складам→форматам→категориям→группам (кэшируется)."""
     return (
         full_df
         .groupby(['Склад','Формат','Категория','Группа'])
@@ -156,34 +158,27 @@ def main():
     if not uploaded:
         return
 
-    # 1) Загрузка и скоринг
+    # 1) загрузка и скоринг
     full_df = process_data(uploaded)
 
-    # 2) Отладочный вывод
-    st.write("**Первые 10 строк (отладка)**")
-    st.dataframe(full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10),
-                 use_container_width=True)
-
-    # 3) Sidebar — фильтрация
+    # 2) Сайдбар — фильтрация
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
 
-    # 3.1 Категории → группы
+    # Категории → Группы
     cats = sorted(df['Категория'].unique())
     sel_cats = sb.multiselect("Категории", cats, default=cats)
     grps = sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique())
     sel_grps = sb.multiselect("Группы", grps, default=grps)
     df = df[df['Категория'].isin(sel_cats)&df['Группа'].isin(sel_grps)]
 
-    # 3.2 Выручка
+    # Выручка
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
     sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
-    min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, sel_rng[0], step=1)
-    max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, sel_rng[1], step=1)
-    df = df[df['Продажа с ЗЦ сумма'].between(min_rev, max_rev)]
+    df = df[df['Продажа с ЗЦ сумма'].between(sel_rng[0], sel_rng[1])]
 
-    # 3.3 Чувствительность
+    # Чувствительность
     sb.markdown("---")
     sb.header("Чувствительность")
     presets = {
@@ -193,80 +188,75 @@ def main():
         "Высокая": ((0.5,5.0),(20.0,60.0),25.0,90.0)
     }
     preset = sb.radio("Пресет", list(presets.keys()), index=2)
-    lw_def, lf_def, hw_def, hf_def = presets[preset]
-
+    lw, lf, hw, hf = presets[preset]
     sb.subheader("Низкие списания + низкое закрытие")
-    low_min, low_max = sb.slider("Списания % (диапазон)", 0.0, 100.0, lw_def, step=0.1)
-    close_min, close_max = sb.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def, step=0.1)
-
+    low_min, low_max = sb.slider("Списания %", 0.0,100.0,lw,step=0.1)
+    close_min, close_max = sb.slider("Закрытие %",0.0,100.0,lf,step=0.1)
     sb.markdown("---")
     sb.subheader("Высокие списания + высокое закрытие")
-    hw_thr = sb.number_input("Порог списания %", 0.0, 200.0, hw_def, step=0.1)
-    hf_thr = sb.number_input("Порог закрытия %", 0.0, 200.0, hf_def, step=0.1)
+    hw_thr = sb.number_input("Порог списания %",0.0,200.0,hw,step=0.1)
+    hf_thr = sb.number_input("Порог закрытия %",0.0,200.0,hf,step=0.1)
 
-    low_df = df[df['Списания %'].between(low_min, low_max) &
-                df['Закрытие потребности %'].between(close_min, close_max)]
+    low_df  = df[df['Списания %'].between(low_min,low_max)&
+                 df['Закрытие потребности %'].between(close_min,close_max)]
     high_df = df[(df['Списания %']>=hw_thr)&(df['Закрытие потребности %']>=hf_thr)]
 
-    # 4) Таблицы аномалий
-    display_anomaly_table(low_df.sort_values('combined', ascending=False).head(100),
+    # 3) Таблицы аномалий
+    display_anomaly_table(low_df.sort_values('combined',ascending=False).head(100),
                           "Низкие списания + низкое закрытие (топ-100)")
-    display_anomaly_table(high_df.sort_values('combined', ascending=False).head(100),
+    display_anomaly_table(high_df.sort_values('combined',ascending=False).head(100),
                           "Высокие списания + высокое закрытие (топ-100)")
 
-    # 5) Диаграмма всех SKU (0–150%)
+    # 4) Диаграмма всех SKU (оси 0–150%)
     st.subheader("Диаграмма всех SKU")
     mask_anom   = df.index.isin(pd.concat([low_df,high_df]).index)
-    mask_report = df.index.isin(pd.concat([
-        low_df.sort_values('combined', ascending=False).head(100),
-        high_df.sort_values('combined', ascending=False).head(100)
-    ]).index)
+    mask_report = df.index.isin(
+        pd.concat([low_df.head(100),high_df.head(100)]).index
+    )
     df_plot = df.copy()
     df_plot['Статус'] = np.where(mask_report,'В отчете',
                           np.where(mask_anom,'Аномалия','Норма'))
-
-    fig = px.scatter(df_plot,
-                     x='Закрытие потребности %',
-                     y='Списания %',
-                     color='Статус',
-                     size='Продажа с ЗЦ сумма',
-                     opacity=0.6,
+    fig = px.scatter(df_plot,x='Закрытие потребности %',y='Списания %',
+                     color='Статус',size='Продажа с ЗЦ сумма',opacity=0.6,
                      hover_data=['Name_tov','Группа','Формат','Склад'],
-                     color_discrete_map={'Норма':'lightgray','Аномалия':'crimson','В отчете':'purple'})
+                     color_discrete_map={'Норма':'lightgray',
+                                         'Аномалия':'crimson',
+                                         'В отчете':'purple'})
     fig.update_xaxes(range=[0,150])
     fig.update_yaxes(range=[0,150])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig,use_container_width=True)
 
-    # 6) Иерархическая фильтрация (каскадно по comp)
+    # 5) Иерархическая фильтрация (комбинации из comp)
     st.subheader("Иерархическая фильтрация")
     comp = get_hierarchy_df(full_df)
 
-    hdf = comp.copy()
+    # Склад
     wh_opts = sorted(comp['Склад'].unique())
     sel_whs = st.multiselect("Склады", wh_opts, default=wh_opts)
-    if sel_whs:
-        hdf = hdf[hdf['Склад'].isin(sel_whs)]
+    comp1 = comp[comp['Склад'].isin(sel_whs)]
 
-    fmt_opts = sorted(hdf['Формат'].unique())
+    # Формат
+    fmt_opts = sorted(comp1['Формат'].unique())
     sel_fmts = st.multiselect("Форматы", fmt_opts, default=fmt_opts)
-    if sel_fmts:
-        hdf = hdf[hdf['Формат'].isin(sel_fmts)]
+    comp2 = comp1[comp1['Формат'].isin(sel_fmts)]
 
-    cat_opts = sorted(hdf['Категория'].unique())
+    # Категория
+    cat_opts = sorted(comp2['Категория'].unique())
     sel_cats2 = st.multiselect("Категории", cat_opts, default=cat_opts)
-    if sel_cats2:
-        hdf = hdf[hdf['Категория'].isin(sel_cats2)]
+    comp3 = comp2[comp2['Категория'].isin(sel_cats2)]
 
-    grp_opts = sorted(hdf['Группа'].unique())
+    # Группа
+    grp_opts = sorted(comp3['Группа'].unique())
     sel_grps2 = st.multiselect("Группы", grp_opts, default=grp_opts)
-    if sel_grps2:
-        hdf = hdf[hdf['Группа'].isin(sel_grps2)]
+    comp4 = comp3[comp3['Группа'].isin(sel_grps2)]
 
-    st.dataframe(hdf[['Склад','Формат','Категория','Группа',
-                      'Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
-                 use_container_width=True)
+    st.dataframe(
+        comp4[['Склад','Формат','Категория','Группа','Списания %',
+               'Закрытие потребности %','Продажа с ЗЦ сумма']],
+        use_container_width=True
+    )
 
-    # 7) Экспорт
+    # 6) Экспорт
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as w:
         low_df.to_excel(w, sheet_name='Низкие', index=False)
