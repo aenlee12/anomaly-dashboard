@@ -18,7 +18,7 @@ def load_and_prepare(uploaded):
         df = pd.read_csv(uploaded)
     df.columns = df.columns.str.strip()
 
-    # Переименование ключевых колонок
+    # Переименование колонок
     col_map = {}
     if 'parent_group_name' in df.columns:
         col_map['parent_group_name'] = 'Категория'
@@ -179,7 +179,7 @@ def main():
     if not uploaded:
         return
 
-    # 1) Загрузка и скоринг
+    # 1) Подготовка и скоринг
     full_df = process_data(uploaded)
 
     # 2) Отладочный вывод
@@ -189,12 +189,12 @@ def main():
         use_container_width=True
     )
 
-    # 3) Сайдбар: фильтрация по выручке, категорию/группу, чувствительность
+    # 3) Sidebar — фильтрация
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
 
-    # 3.1 Категории → группы (каскад)
+    # 3.1 Категории → Группы (каскад)
     cats = sorted(df['Категория'].unique())
     sel_cats = sb.multiselect("Категории", cats, default=cats)
     grps = sorted(df[df['Категория'].isin(sel_cats)]['Группа'].unique())
@@ -212,17 +212,17 @@ def main():
     sb.markdown("---")
     sb.header("Чувствительность")
     presets = {
-        "Нет":     ((0.0,100.0),(0.0,100.0),0.0,0.0),
-        "Слабая":  ((0.5,15.0),(5.0,85.0),15.0,60.0),
-        "Средняя": ((0.5,8.0),(10.0,75.0),20.0,80.0),
-        "Высокая": ((0.5,5.0),(20.0,60.0),25.0,90.0)
+        "Нет":     ((0.0,100.0),(0.0,100.0), 0.0,  0.0),
+        "Слабая":  ((0.5,15.0),(5.0,85.0),  15.0, 60.0),
+        "Средняя": ((0.5,8.0), (10.0,75.0), 20.0, 80.0),
+        "Высокая": ((0.5,5.0), (20.0,60.0), 25.0, 90.0)
     }
     preset = sb.radio("Пресет", list(presets.keys()), index=2)
     lw_def, lf_def, hw_def, hf_def = presets[preset]
 
     sb.subheader("Низкие списания + низкое закрытие")
     low_min, low_max = sb.slider("Списания % (диапазон)", 0.0, 100.0, lw_def, step=0.1)
-    close_min, close_max = sb.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def, step=0.1)
+    close_min, close_max = sb.slider("Закрытие % (диапазон)",   0.0, 100.0, lf_def, step=0.1)
 
     sb.markdown("---")
     sb.subheader("Высокие списания + высокое закрытие")
@@ -244,9 +244,9 @@ def main():
         "Высокие списания + высокое закрытие (топ-100)"
     )
 
-    # 5) Диаграмма всех SKU
+    # 5) Диаграмма всех SKU (с зумом 0–150%)
     st.subheader("Диаграмма всех SKU")
-    mask_anom = df.index.isin(pd.concat([low_df, high_df]).index)
+    mask_anom   = df.index.isin(pd.concat([low_df, high_df]).index)
     mask_report = df.index.isin(
         pd.concat([
             low_df.sort_values('combined', ascending=False).head(100),
@@ -255,7 +255,7 @@ def main():
     )
     df_plot = df.copy()
     df_plot['Статус'] = np.where(mask_report, 'В отчете',
-                          np.where(mask_anom, 'Аномалия', 'Норма'))
+                          np.where(mask_anom, 'Аномалия','Норма'))
 
     fig = px.scatter(
         df_plot,
@@ -271,29 +271,49 @@ def main():
             'В отчете':'purple'
         }
     )
-    fig.update_xaxes(range=[0,100])
-    fig.update_yaxes(range=[0,100])
+    fig.update_xaxes(range=[0,150])
+    fig.update_yaxes(range=[0,150])
     st.plotly_chart(fig, use_container_width=True)
 
-    # 6) Иерархическая фильтрация (каскад multiselect)
+    # 6) Иерархическая фильтрация (каскад multiselect по full_df)
     st.subheader("Иерархическая фильтрация")
     comp = get_hierarchy_df(full_df)
 
-    hdf = comp.copy()
-    sel_whs  = st.multiselect("Склады",   sorted(hdf['Склад'].unique()),   default=sorted(hdf['Склад'].unique()))
-    hdf = hdf[hdf['Склад'].isin(sel_whs)]
+    # Склады
+    wh_options = sorted(full_df['Склад'].unique())
+    sel_whs = st.multiselect("Склады", wh_options, default=wh_options)
+    # Форматы в выбранных складах
+    fmt_options = sorted(full_df[full_df['Склад'].isin(sel_whs)]['Формат'].unique())
+    sel_fmts = st.multiselect("Форматы", fmt_options, default=fmt_options)
+    # Категории в выбранных складах+форматах
+    cat_options = sorted(
+        full_df[
+            full_df['Склад'].isin(sel_whs) &
+            full_df['Формат'].isin(sel_fmts)
+        ]['Категория'].unique()
+    )
+    sel_cats2 = st.multiselect("Категории", cat_options, default=cat_options)
+    # Группы в выбранных складах+форматах+категориях
+    grp_options = sorted(
+        full_df[
+            full_df['Склад'].isin(sel_whs) &
+            full_df['Формат'].isin(sel_fmts) &
+            full_df['Категория'].isin(sel_cats2)
+        ]['Группа'].unique()
+    )
+    sel_grps2 = st.multiselect("Группы", grp_options, default=grp_options)
 
-    sel_fmts = st.multiselect("Форматы",  sorted(hdf['Формат'].unique()),  default=sorted(hdf['Формат'].unique()))
-    hdf = hdf[hdf['Формат'].isin(sel_fmts)]
-
-    sel_cats2= st.multiselect("Категории",sorted(hdf['Категория'].unique()), default=sorted(hdf['Категория'].unique()))
-    hdf = hdf[hdf['Категория'].isin(sel_cats2)]
-
-    sel_grps2= st.multiselect("Группы",   sorted(hdf['Группа'].unique()),   default=sorted(hdf['Группа'].unique()))
-    hdf = hdf[hdf['Группа'].isin(sel_grps2)]
+    # Фильтруем агрегат comp для показа
+    hdf = comp[
+        comp['Склад'].isin(sel_whs) &
+        comp['Формат'].isin(sel_fmts) &
+        comp['Категория'].isin(sel_cats2) &
+        comp['Группа'].isin(sel_grps2)
+    ]
 
     st.dataframe(
-        hdf[['Склад','Формат','Категория','Группа','Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
+        hdf[['Склад','Формат','Категория','Группа',
+             'Списания %','Закрытие потребности %','Продажа с ЗЦ сумма']],
         use_container_width=True
     )
 
