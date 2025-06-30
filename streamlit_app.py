@@ -238,7 +238,7 @@ def main():
             aggFunc='mean',
             valueFormatter="params.value.toFixed(1) + '%'"
         )
-        gridOptions = gb.build() = gb.build()
+        gridOptions = gb.build()
         AgGrid(
             comp,
             gridOptions=gridOptions,
