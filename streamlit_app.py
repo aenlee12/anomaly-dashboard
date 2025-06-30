@@ -1,14 +1,14 @@
+# streamlit_app.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
 from sklearn.ensemble import IsolationForest
 import plotly.express as px
-from st_aggrid import AgGrid, GridOptionsBuilder
 
 st.set_page_config(page_title="Аномалии: списания & закрытие", layout="wide")
 
-# Убираем кэш, чтобы всегда обновлять данные при каждом деплое
 
 def load_and_prepare(uploaded):
     name = uploaded.name.lower()
@@ -41,13 +41,13 @@ def load_and_prepare(uploaded):
         if req not in df.columns:
             raise KeyError(f"Missing column '{req}' in input file")
 
-    # Выручка
+    # Продажа
     sale_col = next((c for c in df.columns if 'продажа' in c.lower() and 'сумма' in c.lower()), None)
     if not sale_col:
         raise KeyError("Missing sales sum column")
     df['Продажа с ЗЦ сумма'] = pd.to_numeric(df[sale_col], errors='coerce').fillna(0)
 
-    # Закрытие потребности
+    # Закрытие потребности %
     fill_col = next((c for c in df.columns if 'закрытие' in c.lower()), None)
     if not fill_col:
         raise KeyError("Missing fill percentage column")
@@ -58,7 +58,7 @@ def load_and_prepare(uploaded):
         ) * 100
     )
 
-    # Списания
+    # Списания %
     col_zc2 = next((c for c in df.columns if c.lower().startswith('зц2')), None)
     col_srok = next((c for c in df.columns if c.lower() == 'срок'), None)
     col_kach = next((c for c in df.columns if c.lower() == 'качество'), None)
@@ -95,7 +95,6 @@ def load_and_prepare(uploaded):
 
     return agg
 
-# Оценка аномалий без кэша
 
 def score_anomalies(df):
     df = df.copy()
@@ -150,25 +149,26 @@ def main():
     if not uploaded:
         return
 
-    full_df = score_anomalies(load_and_prepare(uploaded))
-    # Для отладки: покажем первые 10 строк с разными конечными метриками
-    st.write("**Первые 10 комбинаций (для отладки)**", full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
-    df = full_df.copy()
+    # Загрузка и оценка аномалий
+    prepared = load_and_prepare(uploaded)
+    full_df = score_anomalies(prepared)
 
+    # Отладочный вывод
+    st.write("**Первые 10 комбинаций (для отладки)**")
+    st.dataframe(full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
+
+    # Сайдбар-фильтры
+    df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация")
+    sel_cats = sb.multiselect("Категории", sorted(df['Категория'].unique()), default=sorted(df['Категория'].unique()))
+    sel_grps = sb.multiselect("Группы", sorted(df.loc[df['Категория'].isin(sel_cats), 'Группа'].unique()), default=None)
+    sel_fmts = sb.multiselect("Форматы ТТ", sorted(df['Формат'].unique()), default=[])
+    sel_whs  = sb.multiselect("Склады", sorted(df['Склад'].unique()), default=[])
 
-    cats = sorted(df['Категория'].unique())
-    sel_cats = sb.multiselect("Категории", cats, default=cats)
-    grps = sorted(df.loc[df['Категория'].isin(sel_cats), 'Группа'].unique())
-    sel_grps = sb.multiselect("Группы", grps, default=grps)
-
-    fmts = sorted(df['Формат'].unique())
-    sel_fmts = sb.multiselect("Форматы ТТ", fmts, default=[])
-    whs = sorted(df['Склад'].unique())
-    sel_whs = sb.multiselect("Склады", whs, default=[])
-
-    df = df[df['Категория'].isin(sel_cats) & df['Группа'].isin(sel_grps)]
+    df = df[df['Категория'].isin(sel_cats)]
+    if sel_grps:
+        df = df[df['Группа'].isin(sel_grps)]
     if sel_fmts:
         df = df[df['Формат'].isin(sel_fmts)]
     if sel_whs:
@@ -177,64 +177,58 @@ def main():
         st.warning("Нет данных после фильтров")
         return
 
+    # Выручка фильтр
     smin, smax = int(df['Продажа с ЗЦ сумма'].min()), int(df['Продажа с ЗЦ сумма'].max())
-    sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax), step=1)
-    min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, value=sel_rng[0], step=1)
-    max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, value=sel_rng[1], step=1)
+    sel_rng = sb.slider("Выручка (₽)", smin, smax, (smin, smax))
+    min_rev = sb.number_input("Мин. выручка (₽)", smin, smax, sel_rng[0])
+    max_rev = sb.number_input("Макс. выручка (₽)", smin, smax, sel_rng[1])
     df = df[df['Продажа с ЗЦ сумма'].between(min_rev, max_rev)]
 
+    # Чувствительность
     sb.markdown("---")
     sb.header("Чувствительность")
-    preset = sb.radio("Пресет", ["Нет", "Слабая", "Средняя", "Высокая"])
-    defs = {
-        "Нет":     ((0.0, 100.0), (0.0, 100.0), 0.0, 0.0),
-        "Слабая":  ((0.5, 15.0),  (5.0, 85.0),  15.0, 60.0),
-        "Средняя": ((0.5, 8.0),   (10.0, 75.0), 20.0, 80.0),
-        "Высокая": ((0.5, 5.0),   (20.0, 60.0), 25.0, 90.0)
+    presets = {
+        "Нет":     ((0.0,100.0),(0.0,100.0),0.0,0.0),
+        "Слабая":  ((0.5,15.0),(5.0,85.0),15.0,60.0),
+        "Средняя": ((0.5,8.0),(10.0,75.0),20.0,80.0),
+        "Высокая": ((0.5,5.0),(20.0,60.0),25.0,90.0)
     }
-    lw_def, lf_def, hw_def, hf_def = defs[preset]
+    preset = sb.radio("Пресет", list(presets.keys()), index=2)
+    lw_def, lf_def, hw_def, hf_def = presets[preset]
 
-    sb.subheader("Низкие списания + низкое закрытие")
+    # Низкие
     low_range = sb.slider("Списания % (диапазон)", 0.0, 100.0, lw_def, step=0.1)
-    low_min = sb.number_input("Мин. списания % (число)", 0.0, 100.0, value=low_range[0], step=0.1)
-    low_max = sb.number_input("Макс. списания % (число)", 0.0, 100.0, value=low_range[1], step=0.1)
+    low_min = sb.number_input("Мин. списания %", 0.0, 100.0, low_range[0], step=0.1)
+    low_max = sb.number_input("Макс. списания %", 0.0, 100.0, low_range[1], step=0.1)
     close_range = sb.slider("Закрытие % (диапазон)", 0.0, 100.0, lf_def, step=0.1)
-    close_min = sb.number_input("Мин. закрытие % (число)", 0.0, 100.0, value=close_range[0], step=0.1)
-    close_max = sb.number_input("Макс. закрытие % (число)", 0.0, 100.0, value=close_range[1], step=0.1)
+    close_min = sb.number_input("Мин. закрытие %", 0.0, 100.0, close_range[0], step=0.1)
+    close_max = sb.number_input("Макс. закрытие %", 0.0, 100.0, close_range[1], step=0.1)
 
+    # Высокие
     sb.markdown("---")
     sb.subheader("Высокие списания + высокое закрытие")
-    hw_slider = sb.slider("Порог списания %", 0.0, 200.0, hw_def, step=0.1)
-    hf_slider = sb.slider("Порог закрытия %", 0.0, 200.0, hf_def, step=0.1)
-    hw_thr = sb.number_input("Порог списания % (число)", 0.0, 200.0, value=hw_slider, step=0.1)
-    hf_thr = sb.number_input("Порог закрытия % (число)", 0.0, 200.0, value=hf_slider, step=0.1)
+    hw_thr = sb.number_input("Порог списания %", 0.0, 200.0, hw_def, step=0.1)
+    hf_thr = sb.number_input("Порог закрытия %", 0.0, 200.0, hf_def, step=0.1)
 
-    low_df = df[df['Списания %'].between(low_min, low_max) & df['Закрытие потребности %'].between(close_min, close_max)]
+    low_df  = df[df['Списания %'].between(low_min, low_max) & df['Закрытие потребности %'].between(close_min, close_max)]
     high_df = df[(df['Списания %'] >= hw_thr) & (df['Закрытие потребности %'] >= hf_thr)]
 
-    low_top = low_df.sort_values('combined_score', ascending=False).head(100)
-    high_top = high_df.sort_values('combined_score', ascending=False).head(100)
+    display_anomaly_table(low_df.sort_values('combined_score', ascending=False).head(100),
+                          "Низкие списания + низкое закрытие (топ-100)")
+    display_anomaly_table(high_df.sort_values('combined_score', ascending=False).head(100),
+                          "Высокие списания + высокое закрытие (топ-100)")
 
-    display_anomaly_table(
-        low_top,
-        "Низкие списания + низкое закрытие (топ-100)"
-    )
-    display_anomaly_table(
-        high_top,
-        "Высокие списания + высокое закрытие (топ-100)"
-    )
-    # Scatter plot
+    # Scatter
     mask = df.index.isin(pd.concat([low_df, high_df]).index)
     df_plot = df.copy()
     df_plot['Статус'] = np.where(mask, 'Аномалия', 'Норма')
-    fig = px.scatter(
-        df_plot,
-        x='Списания %', y='Закрытие потребности %',
+    fig_scatter = px.scatter(
+        df_plot, x='Списания %', y='Закрытие потребности %',
         color='Статус', size='Продажа с ЗЦ сумма', opacity=0.6,
         hover_data=['Name_tov','Группа','Формат','Склад'],
         color_discrete_map={'Норма':'lightgray','Аномалия':'crimson'}
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_scatter, use_container_width=True)
 
     # Экспорт
     buf = BytesIO()
@@ -242,47 +236,33 @@ def main():
         low_df.to_excel(writer, sheet_name='Низкие', index=False)
         high_df.to_excel(writer, sheet_name='Высокие', index=False)
     buf.seek(0)
-    st.download_button("Скачать Excel", buf, "anomalies.xlsx", 
+    st.download_button("Скачать Excel", buf, "anomalies.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # Иерархическое сравнение по складам, форматам, категориям и группам
-st.header("Сравнение по форматам и складам (древовидно)")
-with st.expander("Показать/скрыть полное иерархическое сравнение"):
-    # 1) Группируем сразу по четырём уровням
-    comp = full_df.groupby(['Склад', 'Формат', 'Категория', 'Группа']).agg({
+    # ── Иерархическая карта (Treemap) ──
+    comp = full_df.groupby(
+        ['Склад','Формат','Категория','Группа']
+    ).agg({
+        'Продажа с ЗЦ сумма': 'sum',
         'Списания %': 'mean',
-        'Закрытие потребности %': 'mean',
-        'Продажа с ЗЦ сумма': 'sum'
+        'Закрытие потребности %': 'mean'
     }).reset_index()
 
-    # 2) Оставляем колонки в порядке ветвления
-    comp = comp[['Склад', 'Формат', 'Категория', 'Группа', 'Списания %', 'Закрытие потребности %']]
-
-    # 3) Настраиваем AgGrid для Tree Data
-    gb = GridOptionsBuilder.from_dataframe(comp)
-    gb.configure_grid_options(
-        treeData=True,
-        animateRows=True,
-        groupDefaultExpanded=0,               # 0 — все свернуты, -1 — все развёрнуты
-        getDataPath=['Склад', 'Формат', 'Категория', 'Группа']
-    )
-    gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
-    gb.configure_columns(
-        ['Списания %', 'Закрытие потребности %'],
-        type=['numericColumn'],
-        aggFunc='mean',
-        valueFormatter="x.toFixed(1) + '%'"
-    )
-
-    gridOptions = gb.build()
-
-    AgGrid(
+    fig_tree = px.treemap(
         comp,
-        gridOptions=gridOptions,
-        fit_columns_on_grid_load=True,
-        height=500,
-        enable_enterprise_modules=True,  # обязательно для TreeData
-        allow_unsafe_jscode=True         # разрешает JS-formatter
+        path=['Склад','Формат','Категория','Группа'],
+        values='Продажа с ЗЦ сумма',
+        color='Списания %',
+        color_continuous_scale='Reds',
+        hover_data={
+            'Закрытие потребности %': ':.1f',
+            'Списания %': ':.1f',
+            'Продажа с ЗЦ сумма': ':,.0f'
+        },
+        title="Иерархическая карта: продажи и списания"
     )
+    st.plotly_chart(fig_tree, use_container_width=True)
+
+
 if __name__ == "__main__":
     main()
