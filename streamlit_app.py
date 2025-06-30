@@ -38,7 +38,7 @@ def load_and_prepare(uploaded):
         if req not in df.columns:
             raise KeyError(f"Missing column '{req}'")
 
-    # Продажа
+    # Продажа с ЗЦ сумма
     sale_col = next((c for c in df.columns if 'продажа' in c.lower() and 'сумма' in c.lower()), None)
     if not sale_col:
         raise KeyError("Missing sales sum column")
@@ -49,9 +49,12 @@ def load_and_prepare(uploaded):
     if not fill_col:
         raise KeyError("Missing fill percentage column")
     df['Закрытие потребности %'] = (
-        pd.to_numeric(df[fill_col].astype(str)
-                      .str.replace(',', '.').str.rstrip('%'),
-                      errors='coerce') * 100
+        pd.to_numeric(
+            df[fill_col].astype(str)
+                      .str.replace(',', '.')
+                      .str.rstrip('%'),
+            errors='coerce'
+        ) * 100
     )
 
     # Списания %
@@ -64,8 +67,7 @@ def load_and_prepare(uploaded):
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     df['Списания %'] = np.where(
         df['Продажа с ЗЦ сумма'] > 0,
-        (df[col_zc2] + df[col_srok] + df[col_kach]) /
-        df['Продажа с ЗЦ сумма'] * 100,
+        (df[col_zc2] + df[col_srok] + df[col_kach]) / df['Продажа с ЗЦ сумма'] * 100,
         0
     )
 
@@ -115,6 +117,29 @@ def score_anomalies(df):
     return df
 
 
+@st.cache_data(show_spinner=False)
+def process_data(uploaded):
+    """Кэшируем чтение, подготовку и оценку аномалий."""
+    prepared = load_and_prepare(uploaded)
+    return score_anomalies(prepared)
+
+
+@st.cache_data(show_spinner=False)
+def get_hierarchy_df(full_df):
+    """Кэшируем агрегат для иерархической фильтрации."""
+    comp = (
+        full_df
+        .groupby(['Склад','Формат','Категория','Группа'])
+        .agg({
+            'Списания %':'mean',
+            'Закрытие потребности %':'mean',
+            'Продажа с ЗЦ сумма':'sum'
+        })
+        .reset_index()
+    )
+    return comp
+
+
 def display_anomaly_table(df, title):
     st.subheader(f"{title} — {len(df)}")
     rename = {
@@ -152,15 +177,14 @@ def main():
     if not uploaded:
         return
 
-    # Подготовка и оценка
-    prepared = load_and_prepare(uploaded)
-    full_df = score_anomalies(prepared)
+    # один раз читаем и считаем аномалии
+    full_df = process_data(uploaded)
 
-    # Отладочный вывод
+    # отладочный вывод
     st.write("**Первые 10 строк (отладка)**")
     st.dataframe(full_df[['Name_tov','Формат','Склад','Списания %','Закрытие потребности %']].head(10))
 
-    # Sidebar: основная фильтрация и аномалии
+    # Sidebar: фильтрация по аномалиям
     df = full_df.copy()
     sb = st.sidebar
     sb.header("Фильтрация аномалий")
@@ -175,7 +199,6 @@ def main():
         st.warning("Нет данных после фильтров")
         return
 
-    # Пресеты чувствительности
     presets = {
         "Слабая":  ((0.5,15.0),(5.0,85.0),15.0,60.0),
         "Средняя": ((0.5,8.0),(10.0,75.0),20.0,80.0),
@@ -184,12 +207,10 @@ def main():
     preset = sb.radio("Чувствительность", list(presets.keys()), index=1)
     lw_def, lf_def, hw_def, hf_def = presets[preset]
 
-    # Низкие + низкое
     sb.subheader("Низкие списания + низкое закрытие")
     low_min, low_max = sb.slider("Списания %", 0.0, 100.0, lw_def, step=0.1)
     close_min, close_max = sb.slider("Закрытие %", 0.0, 100.0, lf_def, step=0.1)
 
-    # Высокие + высокое
     sb.subheader("Высокие списания + высокое закрытие")
     hw_thr = sb.number_input("Порог списания %", 0.0, 200.0, hw_def, step=0.1)
     hf_thr = sb.number_input("Порог закрытия %", 0.0, 200.0, hf_def, step=0.1)
@@ -204,9 +225,10 @@ def main():
     display_anomaly_table(high_df.sort_values('combined', ascending=False).head(100),
                           "Высокие списания + высокое закрытие (топ-100)")
 
-    # Иерархическая фильтрация (каскадные SelectBox’ы)
+    # иерархическая фильтрация через закэшированный comp
+    comp = get_hierarchy_df(full_df)
     st.subheader("Иерархическая фильтрация")
-    hdf = full_df.copy()
+    hdf = comp.copy()
 
     warehouse = st.selectbox("Склад", ["Все"] + sorted(hdf['Склад'].unique()))
     if warehouse != "Все":
