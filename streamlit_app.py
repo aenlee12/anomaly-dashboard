@@ -246,56 +246,43 @@ def main():
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # Иерархическое сравнение по складам, форматам, категориям и группам
-    st.header("Сравнение по форматам и складам (древовидно)")
-    with st.expander("Показать/скрыть полное иерархическое сравнение"):
-        # Группируем сразу по четырём уровням
-        comp = full_df.groupby(['Склад', 'Формат', 'Категория', 'Группа']).agg({
-            'Списания %': 'mean',
-            'Закрытие потребности %': 'mean',
-            'Продажа с ЗЦ сумма': 'sum'
-        }).reset_index()
+st.header("Сравнение по форматам и складам (древовидно)")
+with st.expander("Показать/скрыть полное иерархическое сравнение"):
+    # 1) Группируем сразу по четырём уровням
+    comp = full_df.groupby(['Склад', 'Формат', 'Категория', 'Группа']).agg({
+        'Списания %': 'mean',
+        'Закрытие потребности %': 'mean',
+        'Продажа с ЗЦ сумма': 'sum'
+    }).reset_index()
 
-        # Оставляем колонки в порядке ветвления
-        comp = comp[['Склад', 'Формат', 'Категория', 'Группа', 'Списания %', 'Закрытие потребности %']]
+    # 2) Оставляем колонки в порядке ветвления
+    comp = comp[['Склад', 'Формат', 'Категория', 'Группа', 'Списания %', 'Закрытие потребности %']]
 
-        # Настраиваем AgGrid для Tree Data
-        gb = GridOptionsBuilder.from_dataframe(comp)
-        gb.configure_grid_options(
-            treeData=True,
-            animateRows=True,
-            groupDefaultExpanded=0,               # 0 — все свернуты, -1 — все развёрнуты
-            getDataPath=['Склад', 'Формат', 'Категория', 'Группа']
-        )
-        # Скрываем столбцы группировки, чтобы не дублировались
-        gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
-        # Форматируем проценты на финальных уровнях
-        gb.configure_columns(
-            ['Списания %', 'Закрытие потребности %'],
-            type=['numericColumn'],
-            aggFunc='mean',
-            valueFormatter="x.toFixed(1) + '%'"
-        )
+    # 3) Настраиваем AgGrid для Tree Data
+    gb = GridOptionsBuilder.from_dataframe(comp)
+    gb.configure_grid_options(
+        treeData=True,
+        animateRows=True,
+        groupDefaultExpanded=0,               # 0 — все свернуты, -1 — все развёрнуты
+        getDataPath=['Склад', 'Формат', 'Категория', 'Группа']
+    )
+    gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
+    gb.configure_columns(
+        ['Списания %', 'Закрытие потребности %'],
+        type=['numericColumn'],
+        aggFunc='mean',
+        valueFormatter="x.toFixed(1) + '%'"
+    )
 
-        gridOptions = gb.build()
+    gridOptions = gb.build()
 
-        AgGrid(
-            comp,
-            gridOptions=gridOptions,
-            fit_columns_on_grid_load=True,
-            height=500,
-            enable_enterprise_modules=True
-        )
-
-        st.dataframe(
-            comp.style.format({
-                'Списания %': '{:.1f}',
-                'Закрытие потребности %': '{:.1f}',
-                'Продажа с ЗЦ сумма': '{:.0f}'
-            })
-            .background_gradient(subset=['Списания %'], cmap='Reds')
-            .background_gradient(subset=['Закрытие потребности %'], cmap='Blues'),
-            use_container_width=True
-        )
-
+    AgGrid(
+        comp,
+        gridOptions=gridOptions,
+        fit_columns_on_grid_load=True,
+        height=500,
+        enable_enterprise_modules=True,  # обязательно для TreeData
+        allow_unsafe_jscode=True         # разрешает JS-formatter
+    )
 if __name__ == "__main__":
     main()
