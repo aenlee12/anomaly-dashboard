@@ -231,16 +231,14 @@ def main():
             getDataPath=['Склад','Формат','Категория','Группа']
         )
         gb.configure_default_column(enableRowGroup=True, rowGroup=True, hide=True)
-                # Настройка колонок с форматированием значений
+                        # Настройка колонок с форматированием значений
         gb.configure_columns(
             ['Списания %','Закрытие потребность %'],
             type=['numericColumn'],
             aggFunc='mean',
             valueFormatter="params.value.toFixed(1) + '%'"
-        ) + '%'"
-        ) + '%'"
         )
-        gridOptions = gb.build()
+        gridOptions = gb.build() = gb.build()
         AgGrid(
             comp,
             gridOptions=gridOptions,
